@@ -35,8 +35,16 @@ find_package(Boost CONFIG REQUIRED COMPONENTS system thread filesystem)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
 find_package(redis++ CONFIG REQUIRED)
-find_package(unofficial-libmysql CONFIG REQUIRED)
+if(WIN32)
+    find_package(unofficial-libmysql CONFIG REQUIRED)
+    set(CHAT_MYSQL_TARGET unofficial::libmysql::libmysql)
+else()
+    find_package(unofficial-libmariadb CONFIG REQUIRED)
+    set(CHAT_MYSQL_TARGET unofficial::libmariadb)
+endif()
 
 if(TARGET redis++::redis++)
     set(CHAT_REDIS_TARGETS redis++::redis++)
@@ -132,8 +140,11 @@ target_link_libraries(GetServer PRIVATE
     nlohmann_json::nlohmann_json
     gRPC::grpc++
     OpenSSL::Crypto
+    OpenSSL::SSL
+    ZLIB::ZLIB
+    Threads::Threads
     ${CHAT_REDIS_TARGETS}
-    unofficial::libmysql::libmysql
+    ${CHAT_MYSQL_TARGET}
 )
 
 if(TARGET gRPC::grpc++_reflection)

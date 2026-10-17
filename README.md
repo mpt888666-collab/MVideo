@@ -174,7 +174,7 @@ Schema 和冒烟脚本：
 - gRPC + Protobuf
 - OpenSSL
 - redis-plus-plus
-- libmysql
+- libmysql（Windows）/ libmariadb（Linux）
 - Redis >= 5，MySQL >= 8
 
 依赖通过 vcpkg 安装，项目会在未指定 toolchain 时尝试使用本机 vcpkg。
@@ -185,15 +185,6 @@ Schema 和冒烟脚本：
 cd GetServer
 cmake -S . -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release -j
-```
-
-Linux 使用 vcpkg 的 `libmysql` 时，需要叠加 `cmake/triplets/x64-linux-mvideo.cmake`。vcpkg 的 ncurses 6.5 默认是 wide-character，而 `libmysql` 的 CMake 没有设置 `CURSES_NEED_WIDE`，这个 triplet 会把该选项补上：
-
-```bash
-cd GetServer
-cmake -S . -B cmake-build-release -DCMAKE_BUILD_TYPE=Release \
-  -DVCPKG_OVERLAY_TRIPLETS=../cmake/triplets \
-  -DVCPKG_TARGET_TRIPLET=x64-linux-mvideo
 ```
 
 ### 配置
@@ -293,6 +284,8 @@ GitHub Actions 会在 push / PR 时校验 README、架构图、SQL schema，并�
 - `.cache/vcpkg/downloads` + `.cache/vcpkg/bincache`：下载的源码包和编译好的二进制包，key 为 `vcpkg-pkgs-<os>-<triplet>-v2-<vcpkg.json 哈希>`，并通过 `restore-keys` 复用旧版本缓存。
 
 缓存只在 CI 中读写，不会提交进 Git 仓库。GitHub 会在缓存 7 天未使用后自动清理，单仓库缓存总量上限为 10 GB；需要强制重建时，把 `ci.yml` 中的 `VCPKG_CACHE_VERSION` 从 `v2` 改成 `v3`。
+
+- Linux 使用 `libmariadb`，Windows 使用 `libmysql`；两者都提供项目使用的 MySQL C API，Linux 侧可以绕开 vcpkg `ncurses 6.5` 在 GCC 15 下的已知构建问题。
 
 ## License
 

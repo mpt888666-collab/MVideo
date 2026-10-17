@@ -16,6 +16,13 @@
     "protobuf",
     "openssl",
     "redis-plus-plus",
-    "libmysql"
+    {
+      "name": "libmysql",
+      "platform": "windows"
+    },
+    {
+      "name": "libmariadb",
+      "platform": "!windows"
+    }
   ]
 }
