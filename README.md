@@ -99,6 +99,34 @@ GetServer/
 - **密码存储**：PBKDF2-SHA256，120000 次迭代，数据库不保存明文密码。
 - **连接保护**：最大连接数 4096、请求头 8 KB、包体 1 MB、每连接最多 1000 个请求，关闭前 drain 未读数据避免 RST。
 
+## 数据库设计
+
+Schema 和冒烟脚本：
+
+- `docs/sql/schema.sql`：建库、建表、索引和外键
+- `docs/sql/smoke.sql`：注册用户、关注、建会话、发消息、写已读位置的写入测试
+
+| 表 | 作用 |
+|---|---|
+| `user` | 账号、邮箱、手机号、密码哈希 |
+| `user_info` | 昵称、头像、简介、关注数、粉丝数 |
+| `user_follow` | 有向关注关系，`status` 标记单向/互关；粉丝列表按 `followee_id` 查 |
+| `chat_thread` | 会话主表，保存类型和会话列表排序用的最后消息冗余字段 |
+| `private_chat` | 私聊会话与两个参与人，要求 `user1_id < user2_id` |
+| `group_chat` | 群资料与群主 |
+| `group_chat_member` | 群成员、角色、禁言截止时间 |
+| `chat_message` | 消息事实表，`thread_msg_seq` 会话内唯一，`client_msg_id` 用于幂等 |
+| `chat_message_read` | 每个用户在每个会话的已读位置，避免群聊消息行存多份已读状态 |
+
+几个取舍：
+
+- 关注和粉丝不拆两张表，统一用 `user_follow`；粉丝列表走 `idx_follow_followee_created`，不会出现两张表状态不一致。
+- `chat_message` 不再存 `recv_id`；私聊接收者由 `private_chat` 决定，群聊接收者由 `group_chat_member` 决定。
+- `status` 只表示消息是否撤回；“已读”是用户维度，放在 `chat_message_read.last_read_seq`。
+- `chat_thread.last_msg_id` / `last_msg_at` 是刻意保留的冗余字段，用来避免会话列表每次聚合消息表。
+
+本地已在 MySQL 9.3 的临时数据库中实际执行通过；CI 会再用 MySQL 8.0 执行一次 schema 和 smoke 脚本。
+
 ## 压测结果
 
 测试环境：Windows 10.0.26300，32 逻辑核，Release 构建，本机回环；Redis 5.0.14.1，MySQL 9.3.0；每轮 5 秒。
@@ -221,7 +249,8 @@ node server.js
 - [ ] MinIO 预签名上传 + FFmpeg 转码 + HLS 播放
 - [ ] WebRTC 信令 + STUN/TURN
 - [ ] Qt + OpenGL 客户端
-- [ ] HTTPS、metrics、trace、CI
+- [x] CI（Linux/Windows 构建、MySQL schema 冒烟、vcpkg 依赖缓存）
+- [ ] HTTPS、metrics、trace、优雅停机
 
 ## 已知限制
 
@@ -240,6 +269,7 @@ node server.js
 ```text
 MVideo/
 ├── docs/architecture/   架构图与生成脚本
+├── docs/sql/            数据库 schema 与冒烟脚本
 ├── GetServer/           账号网关与服务端代码
 ├── VarifyServer/        验证码 gRPC 服务
 ├── client/              Qt / OpenGL 客户端
@@ -248,7 +278,14 @@ MVideo/
 
 构建产物、IDE 配置、日志、`config.ini` 和 `VarifyServer/config.json` 不应提交到仓库。
 
-GitHub Actions 会在 push / PR 时校验 README 与架构图资源，并在 Linux 和 Windows 上使用 vcpkg 构建 `GetServer`。
+GitHub Actions 会在 push / PR 时校验 README、架构图、SQL schema，并在 Linux 和 Windows 上使用 vcpkg 构建 `GetServer`；数据库任务会在 MySQL 8.0 容器里实际执行 `schema.sql` 和 `smoke.sql`。
+
+依赖分两层保存到 GitHub Actions Cache，并在下一次 CI 自动恢复：
+
+- `.cache/vcpkg/tool`：vcpkg 本体，key 为 `vcpkg-tool-<os>-v1`。
+- `.cache/vcpkg/downloads` + `.cache/vcpkg/bincache`：下载的源码包和编译好的二进制包，key 为 `vcpkg-pkgs-<os>-<triplet>-v1-<vcpkg.json 哈希>`，并通过 `restore-keys` 复用旧版本缓存。
+
+缓存只在 CI 中读写，不会提交进 Git 仓库。GitHub 会在缓存 7 天未使用后自动清理，单仓库缓存总量上限为 10 GB；需要强制重建时，把 `ci.yml` 中的 `VCPKG_CACHE_VERSION` 从 `v1` 改成 `v2`。
 
 ## License
 

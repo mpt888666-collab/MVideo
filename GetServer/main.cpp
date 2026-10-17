@@ -1,4 +1,5 @@
 #include <iostream>
+#include <csignal>
 #include <boost/beast.hpp>
 #include <boost/asio.hpp>
 #include <memory>

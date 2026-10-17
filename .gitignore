@@ -1,5 +1,8 @@
 # Build output
 cmake-build-*/
+build-*/
+vcpkg_installed/
+.cache/
 build/
 out/
 

@@ -14,6 +14,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VCPKG_CACHE_VERSION: v1
+
 jobs:
   docs:
     name: Docs and assets
@@ -30,6 +33,13 @@ jobs:
           test -s docs/architecture/mvideo-architecture.png
           grep -q 'docs/architecture/mvideo-architecture.png' README.md
 
+      - name: Verify SQL schema exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s docs/sql/schema.sql
+          test -s docs/sql/smoke.sql
+
       - name: Check for accidental secrets
         shell: bash
         run: |
@@ -39,11 +49,66 @@ jobs:
             exit 1
           fi
 
+  database:
+    name: Database schema
+    needs: docs
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: MVideo
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply schema
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot < docs/sql/schema.sql
+
+      - name: Verify tables
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='MVideo' ORDER BY table_name")"
+          expected="chat_message chat_message_read chat_thread group_chat group_chat_member private_chat user user_follow user_info"
+          for table in $expected; do
+            if ! grep -qx "$table" <<< "$actual"; then
+              echo "Missing table: $table"
+              echo "$actual"
+              exit 1
+            fi
+          done
+          echo "$actual"
+
+      - name: Smoke insert
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot < docs/sql/smoke.sql
+
   build:
     name: Build (${{ matrix.os }})
     needs: docs
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -67,31 +132,141 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Build skipped::GetServer/CMakeLists.txt is not in the repository yet."
+            echo "::notice title=Build skipped::GetServer/CMakeLists.txt is not in the repository."
           fi
 
-      - name: Setup vcpkg and dependencies
+      - name: Restore vcpkg tool
         if: steps.detect.outputs.present == 'true'
-        uses: lukka/run-vcpkg@v11
+        id: vcpkg-tool
+        uses: actions/cache/restore@v4
         with:
-          vcpkgJsonGlob: 'GetServer/vcpkg.json'
+          path: .cache/vcpkg/tool
+          key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_CACHE_VERSION }}
+
+      - name: Restore vcpkg packages
+        if: steps.detect.outputs.present == 'true'
+        id: vcpkg-pkgs
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache/vcpkg/downloads
+            .cache/vcpkg/bincache
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles('GetServer/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-
+
+      - name: Setup vcpkg
+        if: steps.detect.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v cygpath >/dev/null 2>&1; then
+            WORKSPACE_POSIX="$(cygpath -u "$GITHUB_WORKSPACE")"
+          else
+            WORKSPACE_POSIX="$GITHUB_WORKSPACE"
+          fi
+
+          VCPKG_ROOT_POSIX="$WORKSPACE_POSIX/.cache/vcpkg/tool"
+          if [ ! -x "$VCPKG_ROOT_POSIX/vcpkg" ] && [ ! -x "$VCPKG_ROOT_POSIX/vcpkg.exe" ]; then
+            if [ -d "$VCPKG_ROOT_POSIX/.git" ]; then
+              git -C "$VCPKG_ROOT_POSIX" fetch --depth 1 origin
+              git -C "$VCPKG_ROOT_POSIX" reset --hard FETCH_HEAD
+            else
+              git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT_POSIX"
+            fi
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              cmd.exe //c "$(cygpath -w "$VCPKG_ROOT_POSIX/bootstrap-vcpkg.bat") -disableMetrics"
+            else
+              chmod +x "$VCPKG_ROOT_POSIX/bootstrap-vcpkg.sh"
+              "$VCPKG_ROOT_POSIX/bootstrap-vcpkg.sh" -disableMetrics
+            fi
+          fi
+
+          if [ -x "$VCPKG_ROOT_POSIX/vcpkg" ]; then
+            VCPKG_BIN="$VCPKG_ROOT_POSIX/vcpkg"
+          elif [ -x "$VCPKG_ROOT_POSIX/vcpkg.exe" ]; then
+            VCPKG_BIN="$VCPKG_ROOT_POSIX/vcpkg.exe"
+          else
+            echo "::error::vcpkg executable not found under $VCPKG_ROOT_POSIX"
+            exit 1
+          fi
+
+          mkdir -p "$WORKSPACE_POSIX/.cache/vcpkg/downloads" "$WORKSPACE_POSIX/.cache/vcpkg/bincache"
+          DOWNLOADS_DIR="$GITHUB_WORKSPACE/.cache/vcpkg/downloads"
+          BINARY_DIR="$GITHUB_WORKSPACE/.cache/vcpkg/bincache"
+
+          {
+            echo "VCPKG_ROOT_POSIX=$VCPKG_ROOT_POSIX"
+            echo "VCPKG_BIN=$VCPKG_BIN"
+            echo "VCPKG_DOWNLOADS=$DOWNLOADS_DIR"
+            echo "VCPKG_BINARY_SOURCES=clear;files,$BINARY_DIR,readwrite"
+          } >> "$GITHUB_ENV"
+
+          echo "vcpkg root: $VCPKG_ROOT_POSIX"
+          echo "vcpkg downloads: $DOWNLOADS_DIR"
+          echo "vcpkg binary cache: $BINARY_DIR"
+          "$VCPKG_BIN" version
+          cmake --version
+
+      - name: Install dependencies
+        if: steps.detect.outputs.present == 'true'
+        id: vcpkg-install
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VCPKG_BIN" install \
+            --x-manifest-root=GetServer \
+            --triplet "${{ matrix.triplet }}" \
+            --clean-buildtrees-after-build \
+            --clean-packages-after-build
 
       - name: Configure
         if: steps.detect.outputs.present == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          VCPKG_BASE="${VCPKG_ROOT:-$VCPKG_INSTALLATION_ROOT}"
+          if command -v cygpath >/dev/null 2>&1; then
+            TOOLCHAIN="$(cygpath -w "$VCPKG_ROOT_POSIX/scripts/buildsystems/vcpkg.cmake")"
+          else
+            TOOLCHAIN="$VCPKG_ROOT_POSIX/scripts/buildsystems/vcpkg.cmake"
+          fi
+
           cmake -S GetServer -B build \
             -G "${{ matrix.generator }}" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_BASE/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DVCPKG_MANIFEST_MODE=ON \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/GetServer/vcpkg_installed"
 
       - name: Build
         if: steps.detect.outputs.present == 'true'
         shell: bash
         run: cmake --build build --config Release --parallel 2
+
+      - name: Prepare vcpkg cache directories
+        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome != 'skipped' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
+        shell: bash
+        run: mkdir -p .cache/vcpkg/downloads .cache/vcpkg/bincache
+
+      - name: Save vcpkg packages
+        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome != 'skipped' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            .cache/vcpkg/downloads
+            .cache/vcpkg/bincache
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles('GetServer/vcpkg.json') }}
+
+      - name: Save vcpkg tool
+        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-tool.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: .cache/vcpkg/tool
+          key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_CACHE_VERSION }}
 
       - name: Upload binary
         if: steps.detect.outputs.present == 'true'

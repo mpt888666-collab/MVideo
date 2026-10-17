@@ -125,6 +125,7 @@ target_include_directories(GetServer PRIVATE
 )
 
 target_link_libraries(GetServer PRIVATE
+    Boost::headers
     Boost::system
     Boost::thread
     Boost::filesystem
