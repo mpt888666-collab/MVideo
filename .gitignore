@@ -1,0 +1,32 @@
+# Build output
+cmake-build-*/
+build/
+out/
+
+# IDE
+.idea/
+.vs/
+*.user
+*.suo
+
+# Local config and secrets
+config.ini
+*.local.ini
+
+# Logs and temporary files
+*.log
+*.log.*
+_bak_*/
+_bench_*
+/_*.ps1
+/_*.bat
+/_*.cs
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Root-level working copies (kept in docs/architecture)
+/mvideo-architecture.html
+/mvideo-architecture.png
+/generate_arch.py
