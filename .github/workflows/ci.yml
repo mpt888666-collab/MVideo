@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VCPKG_CACHE_VERSION: v1
+  VCPKG_CACHE_VERSION: v2
 
 jobs:
   docs:
@@ -108,7 +108,7 @@ jobs:
     name: build (${{ matrix.name }})
     needs: docs
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
@@ -116,10 +116,10 @@ jobs:
           - name: linux-gcc
             os: ubuntu-latest
             generator: Ninja
-            triplet: x64-linux
+            triplet: x64-linux-mvideo
           - name: windows-msvc
             os: windows-latest
-            generator: Visual Studio 17 2022
+            generator: ""
             triplet: x64-windows
 
     steps:
@@ -203,6 +203,7 @@ jobs:
             echo "VCPKG_BIN=$VCPKG_BIN"
             echo "VCPKG_DOWNLOADS=$DOWNLOADS_DIR"
             echo "VCPKG_BINARY_SOURCES=clear;files,$BINARY_DIR,readwrite"
+            echo "VCPKG_BUILD_TYPE=release"
           } >> "$GITHUB_ENV"
 
           echo "vcpkg root: $VCPKG_ROOT_POSIX"
@@ -220,6 +221,7 @@ jobs:
           echo "CXX=g++" >> "$GITHUB_ENV"
           gcc --version | head -n 1
           g++ --version | head -n 1
+          ninja --version
 
       - name: Install dependencies
         if: steps.detect.outputs.present == 'true'
@@ -230,6 +232,7 @@ jobs:
           "$VCPKG_BIN" install \
             --x-manifest-root=GetServer \
             --triplet "${{ matrix.triplet }}" \
+            --overlay-triplets="$GITHUB_WORKSPACE/cmake/triplets" \
             --clean-buildtrees-after-build \
             --clean-packages-after-build
 
@@ -244,11 +247,16 @@ jobs:
             TOOLCHAIN="$VCPKG_ROOT_POSIX/scripts/buildsystems/vcpkg.cmake"
           fi
 
-          cmake -S GetServer -B build \
-            -G "${{ matrix.generator }}" \
+          GEN_ARGS=()
+          if [ -n "${{ matrix.generator }}" ]; then
+            GEN_ARGS=(-G "${{ matrix.generator }}" )
+          fi
+
+          cmake -S GetServer -B build "${GEN_ARGS[@]}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DVCPKG_OVERLAY_TRIPLETS="$GITHUB_WORKSPACE/cmake/triplets" \
             -DVCPKG_MANIFEST_MODE=ON \
             -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/GetServer/vcpkg_installed"
 
@@ -258,12 +266,12 @@ jobs:
         run: cmake --build build --config Release --parallel 2
 
       - name: Prepare vcpkg cache directories
-        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome != 'skipped' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
+        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome == 'success' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
         shell: bash
         run: mkdir -p .cache/vcpkg/downloads .cache/vcpkg/bincache
 
       - name: Save vcpkg packages
-        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome != 'skipped' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
+        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome == 'success' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
         with:

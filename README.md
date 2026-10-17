@@ -187,6 +187,15 @@ cmake -S . -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release -j
 ```
 
+Linux 使用 vcpkg 的 `libmysql` 时，需要叠加 `cmake/triplets/x64-linux-mvideo.cmake`。vcpkg 的 ncurses 6.5 默认是 wide-character，而 `libmysql` 的 CMake 没有设置 `CURSES_NEED_WIDE`，这个 triplet 会把该选项补上：
+
+```bash
+cd GetServer
+cmake -S . -B cmake-build-release -DCMAKE_BUILD_TYPE=Release \
+  -DVCPKG_OVERLAY_TRIPLETS=../cmake/triplets \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-mvideo
+```
+
 ### 配置
 
 `config.ini` 放在可执行文件工作目录，至少包含：
@@ -280,10 +289,10 @@ GitHub Actions 会在 push / PR 时校验 README、架构图、SQL schema，并�
 
 依赖分两层保存到 GitHub Actions Cache，并在下一次 CI 自动恢复：
 
-- `.cache/vcpkg/tool`：vcpkg 本体，key 为 `vcpkg-tool-<os>-v1`。
-- `.cache/vcpkg/downloads` + `.cache/vcpkg/bincache`：下载的源码包和编译好的二进制包，key 为 `vcpkg-pkgs-<os>-<triplet>-v1-<vcpkg.json 哈希>`，并通过 `restore-keys` 复用旧版本缓存。
+- `.cache/vcpkg/tool`：vcpkg 本体，key 为 `vcpkg-tool-<os>-v2`。
+- `.cache/vcpkg/downloads` + `.cache/vcpkg/bincache`：下载的源码包和编译好的二进制包，key 为 `vcpkg-pkgs-<os>-<triplet>-v2-<vcpkg.json 哈希>`，并通过 `restore-keys` 复用旧版本缓存。
 
-缓存只在 CI 中读写，不会提交进 Git 仓库。GitHub 会在缓存 7 天未使用后自动清理，单仓库缓存总量上限为 10 GB；需要强制重建时，把 `ci.yml` 中的 `VCPKG_CACHE_VERSION` 从 `v1` 改成 `v2`。
+缓存只在 CI 中读写，不会提交进 Git 仓库。GitHub 会在缓存 7 天未使用后自动清理，单仓库缓存总量上限为 10 GB；需要强制重建时，把 `ci.yml` 中的 `VCPKG_CACHE_VERSION` 从 `v2` 改成 `v3`。
 
 ## License
 
