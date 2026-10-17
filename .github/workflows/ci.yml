@@ -105,7 +105,7 @@ jobs:
           docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot < docs/sql/smoke.sql
 
   build:
-    name: Build (${{ matrix.os }})
+    name: build (${{ matrix.name }})
     needs: docs
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -113,10 +113,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - name: linux-gcc
+            os: ubuntu-latest
             generator: Ninja
             triplet: x64-linux
-          - os: windows-latest
+          - name: windows-msvc
+            os: windows-latest
             generator: Visual Studio 17 2022
             triplet: x64-windows
 
@@ -208,6 +210,16 @@ jobs:
           echo "vcpkg binary cache: $BINARY_DIR"
           "$VCPKG_BIN" version
           cmake --version
+
+      - name: Select GCC
+        if: matrix.name == 'linux-gcc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CXX=g++" >> "$GITHUB_ENV"
+          gcc --version | head -n 1
+          g++ --version | head -n 1
 
       - name: Install dependencies
         if: steps.detect.outputs.present == 'true'
