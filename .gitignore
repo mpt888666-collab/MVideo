@@ -12,6 +12,8 @@ out/
 # Local config and secrets
 config.ini
 *.local.ini
+VarifyServer/config.json
+node_modules/
 
 # Logs and temporary files
 *.log

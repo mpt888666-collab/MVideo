@@ -88,7 +88,7 @@ GetServer/
 └── net/          Asio / Beast 服务器与连接管理
 ```
 
-> 服务端源码目前在本地 `GetServer/`，整理后会迁入本仓库的 `server/GetServer/`；本仓库先提交架构与设计文档。
+> 服务端代码位于本仓库的 `GetServer/` 与 `VarifyServer/`；当前先提交架构与设计文档，代码整理后再纳入版本管理。
 
 ### 关键设计
 
@@ -156,7 +156,7 @@ GetServer/
 ### 构建
 
 ```bash
-cd server/GetServer
+cd GetServer
 cmake -S . -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release -j
 ```
@@ -229,14 +229,15 @@ Port = 50051
 ```text
 MVideo/
 ├── docs/architecture/   架构图与生成脚本
-├── server/GetServer/    账号网关与服务端代码
+├── GetServer/           账号网关与服务端代码
+├── VarifyServer/        验证码 gRPC 服务
 ├── client/              Qt / OpenGL 客户端
 └── README.md
 ```
 
 构建产物、IDE 配置、日志和包含密码的 `config.ini` 不应提交到仓库。
 
-GitHub Actions 会在 push / PR 时校验 README 与架构图资源；`server/GetServer` 代码迁入后，会自动在 Linux 和 Windows 上使用 vcpkg 构建。
+GitHub Actions 会在 push / PR 时校验 README 与架构图资源；`GetServer` 代码纳入仓库后，会自动在 Linux 和 Windows 上使用 vcpkg 构建。
 
 ## License
 

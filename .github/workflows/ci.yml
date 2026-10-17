@@ -63,18 +63,18 @@ jobs:
         id: detect
         shell: bash
         run: |
-          if [ -f server/GetServer/CMakeLists.txt ]; then
+          if [ -f GetServer/CMakeLists.txt ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Build skipped::server/GetServer/CMakeLists.txt is not in the repository yet."
+            echo "::notice title=Build skipped::GetServer/CMakeLists.txt is not in the repository yet."
           fi
 
       - name: Setup vcpkg and dependencies
         if: steps.detect.outputs.present == 'true'
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgJsonGlob: 'server/GetServer/vcpkg.json'
+          vcpkgJsonGlob: 'GetServer/vcpkg.json'
 
       - name: Configure
         if: steps.detect.outputs.present == 'true'
@@ -82,7 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           VCPKG_BASE="${VCPKG_ROOT:-$VCPKG_INSTALLATION_ROOT}"
-          cmake -S server/GetServer -B build \
+          cmake -S GetServer -B build \
             -G "${{ matrix.generator }}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_BASE/scripts/buildsystems/vcpkg.cmake" \
