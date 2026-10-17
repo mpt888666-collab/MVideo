@@ -125,8 +125,6 @@ Schema 和冒烟脚本：
 - `status` 只表示消息是否撤回；“已读”是用户维度，放在 `chat_message_read.last_read_seq`。
 - `chat_thread.last_msg_id` / `last_msg_at` 是刻意保留的冗余字段，用来避免会话列表每次聚合消息表。
 
-本地已在 MySQL 9.3 的临时数据库中实际执行通过；CI 会再用 MySQL 8.0 执行一次 schema 和 smoke 脚本。
-
 ## 压测结果
 
 测试环境：Windows 10.0.26300，32 逻辑核，Release 构建，本机回环；Redis 5.0.14.1，MySQL 9.3.0；每轮 5 秒。
