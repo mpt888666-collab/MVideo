@@ -88,7 +88,7 @@ GetServer/
 └── net/          Asio / Beast 服务器与连接管理
 ```
 
-> 服务端代码位于本仓库的 `GetServer/` 与 `VarifyServer/`；当前先提交架构与设计文档，代码整理后再纳入版本管理。
+> 服务端代码位于本仓库的 `GetServer/` 与 `VarifyServer/`。
 
 ### 关键设计
 
@@ -199,6 +199,17 @@ Port = 50051
 
 启动前确保 Redis、MySQL、VarifyServer 可用；任一下游连接失败，进程会直接退出。
 
+### VarifyServer
+
+```bash
+cd VarifyServer
+npm install
+cp config.example.json config.json
+node server.js
+```
+
+把 `config.json` 中的邮箱授权码、MySQL 和 Redis 配置补全。`config.json` 已被 `.gitignore` 排除，不要提交真实密钥。
+
 ## 路线图
 
 - [x] 邮箱验证码（缓存优先、冷却、多维度限流）
@@ -224,7 +235,7 @@ Port = 50051
 
 ## 仓库说明
 
-当前仓库先提交架构图与设计文档。后续计划目录：
+当前仓库包含架构文档、账号网关和验证码服务源码。目录：
 
 ```text
 MVideo/
@@ -235,9 +246,9 @@ MVideo/
 └── README.md
 ```
 
-构建产物、IDE 配置、日志和包含密码的 `config.ini` 不应提交到仓库。
+构建产物、IDE 配置、日志、`config.ini` 和 `VarifyServer/config.json` 不应提交到仓库。
 
-GitHub Actions 会在 push / PR 时校验 README 与架构图资源；`GetServer` 代码纳入仓库后，会自动在 Linux 和 Windows 上使用 vcpkg 构建。
+GitHub Actions 会在 push / PR 时校验 README 与架构图资源，并在 Linux 和 Windows 上使用 vcpkg 构建 `GetServer`。
 
 ## License
 
