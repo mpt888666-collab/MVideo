@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <type_traits>
 namespace {
 
 struct StmtDeleter {
@@ -98,8 +99,9 @@ LookupResult FindExistingUser(MYSQL* mysql, const std::string& account,
     }
 
     unsigned long long existing_id = 0;
-    bool existing_is_null = false;
     MYSQL_BIND result{};
+    using MysqlNullFlag = std::remove_pointer_t<decltype(result.is_null)>;
+    MysqlNullFlag existing_is_null = 0;
     result.buffer_type = MYSQL_TYPE_LONGLONG;
     result.buffer = &existing_id;
     result.is_null = &existing_is_null;
