@@ -8,7 +8,6 @@
 
 namespace validators {
 namespace {
-
 bool IsAsciiSpace(unsigned char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
 }
@@ -47,10 +46,8 @@ bool IsValidUtf8(const std::string& value, std::size_t& char_count) {
             code_point = (code_point << 6) | (next & 0x3F);
         }
 
-        if ((length == 2 && code_point < 0x80) ||
-            (length == 3 && code_point < 0x800) ||
-            (length == 4 && code_point < 0x10000) ||
-            code_point > 0x10FFFF ||
+        if ((length == 2 && code_point < 0x80) || (length == 3 && code_point < 0x800) ||
+            (length == 4 && code_point < 0x10000) || code_point > 0x10FFFF ||
             (code_point >= 0xD800 && code_point <= 0xDFFF)) {
             return false;
         }
@@ -60,8 +57,7 @@ bool IsValidUtf8(const std::string& value, std::size_t& char_count) {
     }
     return true;
 }
-
-} // namespace
+}  // namespace
 
 std::string TrimAscii(std::string value) {
     std::size_t begin = 0;
@@ -90,8 +86,7 @@ bool IsValidEmail(const std::string& value) {
     if (value.empty() || value.size() > 254) {
         return false;
     }
-    static const std::regex pattern(
-            R"(^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$)");
+    static const std::regex pattern(R"(^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$)");
     return std::regex_match(value, pattern);
 }
 
@@ -99,9 +94,7 @@ bool IsValidAccount(const std::string& value) {
     if (value.size() < 4 || value.size() > 32) {
         return false;
     }
-    return std::all_of(value.begin(), value.end(), [](unsigned char c) {
-        return std::isalnum(c) != 0 || c == '_';
-    });
+    return std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isalnum(c) != 0 || c == '_'; });
 }
 
 bool IsValidUsername(const std::string& value) {
@@ -112,9 +105,7 @@ bool IsValidUsername(const std::string& value) {
     if (!IsValidUtf8(value, char_count) || char_count > 64) {
         return false;
     }
-    return std::all_of(value.begin(), value.end(), [](unsigned char c) {
-        return c >= 0x20 && c != 0x7f;
-    });
+    return std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 0x20 && c != 0x7f; });
 }
 
 bool IsValidPassword(const std::string& value) {
@@ -132,17 +123,19 @@ bool IsValidPhone(const std::string& value) {
     if (begin == value.size()) {
         return false;
     }
-    return std::all_of(value.begin() + static_cast<std::ptrdiff_t>(begin), value.end(),
-                       [](unsigned char c) { return std::isdigit(c) != 0; });
+    return std::all_of(value.begin() + static_cast<std::ptrdiff_t>(begin), value.end(), [](unsigned char c) {
+        return std::isdigit(c) != 0;
+    });
 }
 
 bool IsValidCode(const std::string& value) {
     if (value.size() < 4 || value.size() > 8) {
         return false;
     }
-    return std::all_of(value.begin(), value.end(), [](unsigned char c) {
-        return std::isalnum(c) != 0;
-    });
+    return std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isalnum(c) != 0; });
 }
 
-} // namespace validators
+bool IsSamePwd(const std::string& value1, const std::string& value2) {
+    return value1 == value2;
+}
+}  // namespace validators

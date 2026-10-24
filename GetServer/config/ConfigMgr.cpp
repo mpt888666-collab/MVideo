@@ -9,7 +9,8 @@
 #include <iostream>
 #include <map>
 #include <string>
-ConfigMgr::ConfigMgr(){
+
+ConfigMgr::ConfigMgr() {
     // 获取当前工作目录
     boost::filesystem::path current_path = boost::filesystem::current_path();
     // 构建config.ini文件的完整路径

@@ -15,7 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VCPKG_CACHE_VERSION: v2
+  VCPKG_CACHE_VERSION: v3
+  QT_VERSION: 6.8.3
 
 jobs:
   docs:
@@ -25,27 +26,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify architecture asset
+      - name: Verify project assets
         shell: bash
         run: |
           set -euo pipefail
           test -s README.md
           test -s docs/architecture/mvideo-architecture.png
+          test -s docs/sql/schema.sql
+          test -s docs/sql/smoke.sql
           grep -q 'docs/architecture/mvideo-architecture.png' README.md
 
-      - name: Verify SQL schema exists
+      - name: Verify vcpkg manifests
         shell: bash
         run: |
           set -euo pipefail
-          test -s docs/sql/schema.sql
-          test -s docs/sql/smoke.sql
+          for manifest in GetServer/vcpkg.json ChatServer1/vcpkg.json StatusServer/vcpkg.json; do
+            test -s "$manifest"
+            python3 -m json.tool "$manifest" > /dev/null
+          done
 
       - name: Check for accidental secrets
         shell: bash
         run: |
           set -euo pipefail
+
+          if git ls-files --error-unmatch VarifyServer/config.json >/dev/null 2>&1; then
+            echo "::error::VarifyServer/config.json must never be tracked by Git."
+            exit 1
+          fi
+
           if grep -RInE '(password|passwd|secret)[[:space:]]*=[[:space:]]*[^<[:space:]]+' README.md docs; then
-            echo "Possible plaintext secret found."
+            echo "::error::Possible plaintext secret found in documentation."
             exit 1
           fi
 
@@ -104,15 +115,16 @@ jobs:
           set -euo pipefail
           docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot < docs/sql/smoke.sql
 
-  build:
-    name: build (${{ matrix.name }})
+  servers:
+    name: server (${{ matrix.project }}, ${{ matrix.platform.name }})
     needs: docs
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 240
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        include:
+        project: [GetServer, ChatServer1, StatusServer]
+        platform:
           - name: linux-gcc
             os: ubuntu-latest
             generator: Ninja
@@ -126,19 +138,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect server sources
-        id: detect
-        shell: bash
-        run: |
-          if [ -f GetServer/CMakeLists.txt ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Build skipped::GetServer/CMakeLists.txt is not in the repository."
-          fi
-
       - name: Restore vcpkg tool
-        if: steps.detect.outputs.present == 'true'
         id: vcpkg-tool
         uses: actions/cache/restore@v4
         with:
@@ -146,21 +146,18 @@ jobs:
           key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_CACHE_VERSION }}
 
       - name: Restore vcpkg packages
-        if: steps.detect.outputs.present == 'true'
         id: vcpkg-pkgs
         uses: actions/cache/restore@v4
         with:
           path: |
             .cache/vcpkg/downloads
             .cache/vcpkg/bincache
-          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles('GetServer/vcpkg.json') }}
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}
           restore-keys: |
-            vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles('GetServer/vcpkg.json') }}-
-            vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-
-            vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-
 
       - name: Setup vcpkg
-        if: steps.detect.outputs.present == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -170,6 +167,7 @@ jobs:
             WORKSPACE_POSIX="$GITHUB_WORKSPACE"
           fi
 
+          mkdir -p "$WORKSPACE_POSIX/.cache/vcpkg"
           VCPKG_ROOT_POSIX="$WORKSPACE_POSIX/.cache/vcpkg/tool"
           if [ ! -x "$VCPKG_ROOT_POSIX/vcpkg" ] && [ ! -x "$VCPKG_ROOT_POSIX/vcpkg.exe" ]; then
             if [ -d "$VCPKG_ROOT_POSIX/.git" ]; then
@@ -214,7 +212,7 @@ jobs:
           cmake --version
 
       - name: Select GCC
-        if: matrix.name == 'linux-gcc'
+        if: matrix.platform.name == 'linux-gcc'
         shell: bash
         run: |
           set -euo pipefail
@@ -224,20 +222,20 @@ jobs:
           g++ --version | head -n 1
           ninja --version
 
-      - name: Install dependencies
-        if: steps.detect.outputs.present == 'true'
+      - name: Install vcpkg dependencies
         id: vcpkg-install
+        env:
+          VCPKG_MAX_CONCURRENCY: 2
         shell: bash
         run: |
           set -euo pipefail
           "$VCPKG_BIN" install \
-            --x-manifest-root=GetServer \
-            --triplet "${{ matrix.triplet }}" \
+            --x-manifest-root="${{ matrix.project }}" \
+            --triplet "${{ matrix.platform.triplet }}" \
             --clean-buildtrees-after-build \
-            --clean-packages-after-build 2>&1 | tee vcpkg-install.log
+            --clean-packages-after-build 2>&1 | tee "vcpkg-install-${{ matrix.project }}.log"
 
       - name: Configure
-        if: steps.detect.outputs.present == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -248,21 +246,20 @@ jobs:
           fi
 
           GEN_ARGS=()
-          if [ -n "${{ matrix.generator }}" ]; then
-            GEN_ARGS=(-G "${{ matrix.generator }}" )
+          if [ -n "${{ matrix.platform.generator }}" ]; then
+            GEN_ARGS=(-G "${{ matrix.platform.generator }}")
           fi
 
-          cmake -S GetServer -B build "${GEN_ARGS[@]}" \
+          cmake -S "${{ matrix.project }}" -B "build-${{ matrix.project }}" "${GEN_ARGS[@]}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.platform.triplet }} \
             -DVCPKG_MANIFEST_MODE=ON \
-            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/GetServer/vcpkg_installed"
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/${{ matrix.project }}/vcpkg_installed"
 
       - name: Build
-        if: steps.detect.outputs.present == 'true'
         shell: bash
-        run: cmake --build build --config Release --parallel 2
+        run: cmake --build "build-${{ matrix.project }}" --config Release --parallel 2
 
       - name: Publish vcpkg failure summary
         if: failure() && steps.vcpkg-install.outcome == 'failure'
@@ -270,9 +267,9 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "### vcpkg install failed"
+            echo "### vcpkg install failed: ${{ matrix.project }}"
             echo '```text'
-            tail -n 200 vcpkg-install.log || true
+            tail -n 200 "vcpkg-install-${{ matrix.project }}.log" || true
             echo '```'
             for f in $(ls -t "$VCPKG_ROOT_POSIX"/buildtrees/*/*out.log "$VCPKG_ROOT_POSIX"/buildtrees/*/*err.log 2>/dev/null | head -n 4); do
               echo "#### $f"
@@ -283,32 +280,32 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare vcpkg cache directories
-        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome != 'skipped'
+        if: always() && steps.vcpkg-install.outcome != 'skipped'
         shell: bash
         run: mkdir -p .cache/vcpkg/downloads .cache/vcpkg/bincache
 
       - name: Save vcpkg packages
-        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome == 'success' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
+        if: always() && steps.vcpkg-install.outcome == 'success' && steps.vcpkg-pkgs.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
           path: |
             .cache/vcpkg/downloads
             .cache/vcpkg/bincache
-          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles('GetServer/vcpkg.json') }}
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}
 
       - name: Save vcpkg packages after failure
-        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-install.outcome == 'failure'
+        if: always() && steps.vcpkg-install.outcome == 'failure'
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
           path: |
             .cache/vcpkg/downloads
             .cache/vcpkg/bincache
-          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles('GetServer/vcpkg.json') }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save vcpkg tool
-        if: always() && steps.detect.outputs.present == 'true' && steps.vcpkg-tool.outputs.cache-hit != 'true'
+        if: always() && steps.vcpkg-tool.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -316,13 +313,108 @@ jobs:
           key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_CACHE_VERSION }}
 
       - name: Upload binary
-        if: steps.detect.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: GetServer-${{ matrix.triplet }}
+          name: ${{ matrix.project }}-${{ matrix.platform.triplet }}
           path: |
-            build/GetServer
-            build/Release/GetServer.exe
-            build/**/GetServer.exe
-          if-no-files-found: ignore
+            build-${{ matrix.project }}/${{ matrix.project }}
+            build-${{ matrix.project }}/Release/${{ matrix.project }}.exe
+            build-${{ matrix.project }}/**/${{ matrix.project }}.exe
+          if-no-files-found: error
           retention-days: 7
+
+  client:
+    name: client (${{ matrix.platform.name }})
+    needs: docs
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux-gcc
+            os: ubuntu-latest
+          - name: windows-msvc
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux Qt build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libglu1-mesa-dev
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+          modules: qtmultimedia
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEN_ARGS=()
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            GEN_ARGS=(-G Ninja)
+          fi
+
+          cmake -S MVideoClient -B build-client "${GEN_ARGS[@]}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+            -DMVIDEO_CLIENT_DEPLOY_QT=OFF
+
+      - name: Build
+        shell: bash
+        run: cmake --build build-client --config Release --parallel 2
+
+      - name: Upload client binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: MVideoClient-${{ matrix.platform.name }}
+          path: |
+            build-client/MVideoClient
+            build-client/Release/MVideoClient.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-server:
+    name: VarifyServer (Node.js)
+    needs: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: VarifyServer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: VarifyServer/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Validate example config
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('config.example.json','utf8'));if(!c.email||!c.mysql||!c.redis){throw new Error('Invalid example config')};console.log('config.example.json is valid')"
+
+      - name: Syntax-check JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in *.js; do
+            node --check "$file"
+          done

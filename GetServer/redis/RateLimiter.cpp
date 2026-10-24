@@ -6,7 +6,6 @@
 #include <vector>
 
 namespace redis {
-
 int RateLimiter::Acquire(RedisMgr& redis, const std::vector<RateRule>& rules) {
     static const std::string kScript = R"(
         -- KEYS[i] = 计数 key；ARGV[2i-1] = limit，ARGV[2i] = windowSec
@@ -33,8 +32,7 @@ int RateLimiter::Acquire(RedisMgr& redis, const std::vector<RateRule>& rules) {
     return static_cast<int>(redis.EvalInt(kScript, keys, args));
 }
 
-void RateLimiter::Release(RedisMgr& redis, std::size_t lock_count,
-                          const std::vector<std::string>& keys) {
+void RateLimiter::Release(RedisMgr& redis, std::size_t lock_count, const std::vector<std::string>& keys) {
     static const std::string kScript = R"(
         -- ARGV[1] = lock_count；前 lock_count 个 KEYS 是锁，后面是计数
         local lock_count = tonumber(ARGV[1])
@@ -52,5 +50,4 @@ void RateLimiter::Release(RedisMgr& redis, std::size_t lock_count,
     )";
     redis.EvalInt(kScript, keys, {std::to_string(lock_count)});
 }
-
-}
+}  // namespace redis

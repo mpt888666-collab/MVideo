@@ -6,26 +6,13 @@
 class RedisMgr;
 
 namespace service {
+class VarifyCodeService {
+public:
+    enum class SlotResult { Allowed, GlobalLimited, MailCooldown, IpCooldown, QuotaExceeded, CacheHit, RedisError };
 
-    class VarifyCodeService {
-    public:
-        enum class SlotResult {
-            Allowed,
-            GlobalLimited,
-            MailCooldown,
-            IpCooldown,
-            QuotaExceeded,
-            CacheHit,
-            RedisError
-        };
+    static SlotResult AcquireSlot(RedisMgr& redis, const std::string& email, const std::string& ip);
 
-        static SlotResult AcquireSlot(RedisMgr& redis, const std::string& email,
-                                      const std::string& ip);
-
-        static void ReleaseSlot(RedisMgr& redis, const std::string& email,
-                                const std::string& ip);
-    };
-
-}
-
-#endif // GETSERVER_SERVICE_VARIFYCODESERVICE_H
+    static void ReleaseSlot(RedisMgr& redis, const std::string& email, const std::string& ip);
+};
+}  // namespace service
+#endif  // GETSERVER_SERVICE_VARIFYCODESERVICE_H

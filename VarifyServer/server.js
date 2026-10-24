@@ -1,10 +1,14 @@
 const grpc = require('@grpc/grpc-js')
-const { v4: uuidv4 } = require('uuid')
+const crypto = require('crypto')
 const message_proto = require('./proto')
 const redis_module = require('./redis')
 const emailModule = require('./email')
 const const_module = require('./const')
 const config_module = require('./config')
+
+function GenerateVarifyCode() {
+    return crypto.randomInt(0, 1000000).toString().padStart(6, '0')
+}
 
 async function GetVarifyCode(call, callback) {
     console.log("email is ", call.request.email)
@@ -13,11 +17,8 @@ async function GetVarifyCode(call, callback) {
         console.log("query_res is ", query_res)
 
         let uniqueId = query_res;
-        if (query_res == null) {
-            uniqueId = uuidv4();
-            if (uniqueId.length > 4) {
-                uniqueId = uniqueId.substring(0, 4);
-            }
+        if (uniqueId == null || !/^\d{6}$/.test(uniqueId)) {
+            uniqueId = GenerateVarifyCode();
             let bres = await redis_module.SetRedisExpire(const_module.code_prefix + call.request.email, uniqueId, 600)
             if (!bres) {
                 callback(null, {

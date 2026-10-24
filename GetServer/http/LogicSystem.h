@@ -11,12 +11,15 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 class HttpConnection;
-class LogicSystem : public Singleton<LogicSystem>{
-    friend class Singleton<LogicSystem>;
-public:
-    bool HandleGet(const std::string &url, std::shared_ptr<HttpConnection> conn);
 
-    bool HandlePost(const std::string &url, std::shared_ptr<HttpConnection> conn);
+class LogicSystem : public Singleton<LogicSystem> {
+    friend class Singleton<LogicSystem>;
+
+public:
+    bool HandleGet(const std::string& url, std::shared_ptr<HttpConnection> conn);
+
+    bool HandlePost(const std::string& url, std::shared_ptr<HttpConnection> conn);
+
 private:
     LogicSystem();
 
@@ -31,6 +34,4 @@ private:
     std::unordered_map<std::string, std::function<void(std::shared_ptr<HttpConnection>)>> _get_handlers;
     std::unordered_map<std::string, std::function<void(std::shared_ptr<HttpConnection>)>> _post_handlers;
 };
-
-
-#endif //GETSERVER_LOGICSYSTEM_H
+#endif  // GETSERVER_LOGICSYSTEM_H

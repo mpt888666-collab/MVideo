@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "mvideo-statusserver",
+  "version-string": "0.1.0",
+  "description": "MVideo status service dependencies",
+  "dependencies": [
+    "boost-system",
+    "boost-thread",
+    "boost-filesystem",
+    "boost-asio",
+    "boost-beast",
+    "boost-optional",
+    "boost-property-tree",
+    "grpc",
+    "protobuf",
+    "redis-plus-plus"
+  ]
+}

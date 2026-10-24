@@ -7,9 +7,10 @@
 #include "config/ConfigMgr.h"
 #include "redis/RedisMgr.h"
 #include "db/MySqlMgr.h"
+
 int main() {
     try {
-        if (!RedisMgr::GetInstance()->IsValid()){
+        if (!RedisMgr::GetInstance()->IsValid()) {
             std::cerr << "Redis连接失败！" << std::endl;
             return -1;
         }
@@ -30,7 +31,7 @@ int main() {
         std::shared_ptr<Server> server = std::make_shared<Server>(ioc, port);
         server->Start();
         ioc.run();
-    }catch(std::exception& e) {
+    } catch (std::exception& e) {
         std::cerr << e.what() << std::endl;
     }
     return 0;

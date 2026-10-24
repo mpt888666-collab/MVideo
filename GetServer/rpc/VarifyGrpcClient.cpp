@@ -8,10 +8,13 @@
 #include <grpcpp/grpcpp.h>
 #include "const.h"
 #include "config/ConfigMgr.h"
-VarifyGrpcClientPool::VarifyGrpcClientPool(const std::string &host, const std::string& port, std::size_t size) :
-_host(host), _port(port), _grpc_pool_size(size){
-    std::shared_ptr<grpc::Channel> channel = grpc::CreateChannel(_host + ":" + _port,
-                grpc::InsecureChannelCredentials());
+
+VarifyGrpcClientPool::VarifyGrpcClientPool(const std::string& host, const std::string& port, std::size_t size)
+    : _host(host),
+      _port(port),
+      _grpc_pool_size(size) {
+    std::shared_ptr<grpc::Channel> channel =
+            grpc::CreateChannel(_host + ":" + _port, grpc::InsecureChannelCredentials());
     int currentPoolSize = 0;
     for (std::size_t i = 0; i < _grpc_pool_size; i++) {
         std::unique_ptr<message::VarifyService::Stub> stub = message::VarifyService::NewStub(channel);
@@ -23,7 +26,7 @@ _host(host), _port(port), _grpc_pool_size(size){
 
 std::unique_ptr<message::VarifyService::Stub> VarifyGrpcClientPool::GetGrpcService(int timeoutMs) {
     std::unique_lock<std::mutex> lock(_mtx);
-    bool hasIdle = _cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),[this]() {
+    bool hasIdle = _cv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [this]() {
         return !_client_pool.empty() || _b_stop;
     });
 
@@ -54,7 +57,8 @@ void VarifyGrpcClientPool::ReturnGrpcService(std::unique_ptr<message::VarifyServ
 
 void VarifyGrpcClientPool::Stop() {
     std::unique_lock<std::mutex> lock(_mtx);
-    if (_b_stop) return;
+    if (_b_stop)
+        return;
     _b_stop = true;
     lock.unlock();
     _cv.notify_all();
@@ -70,14 +74,33 @@ VarifyGrpcClientPool::~VarifyGrpcClientPool() {
 VarifyGrpcClient::VarifyGrpcClient() {
     auto host = ConfigMgr::Inst()["VarifyServer"]["Host"];
     auto port = ConfigMgr::Inst()["VarifyServer"]["Port"];
-    _pool = std::make_unique<VarifyGrpcClientPool>(host, port);
+    std::size_t stub_pool_size = 0;
+    try {
+        const auto configured = ConfigMgr::Inst()["VarifyServer"]["StubPoolSize"];
+        if (!configured.empty()) {
+            stub_pool_size = static_cast<std::size_t>(std::stoi(configured));
+        }
+    } catch (...) {
+    }
+    if (stub_pool_size == 0) {
+        const unsigned int hardware = std::thread::hardware_concurrency();
+        stub_pool_size = hardware > 0 ? hardware / 2 : 8;
+        if (stub_pool_size < 4)
+            stub_pool_size = 4;
+        if (stub_pool_size > 16)
+            stub_pool_size = 16;
+    }
+    if (stub_pool_size < 2)
+        stub_pool_size = 2;
+    if (stub_pool_size > 64)
+        stub_pool_size = 64;
+    _pool = std::make_unique<VarifyGrpcClientPool>(host, port, stub_pool_size);
     if (_pool == nullptr) {
         throw std::runtime_error("VarifyGrpcClient Pool create failed");
     }
-
 }
 
-message::GetVarifyRsp VarifyGrpcClient::GetVarityCode(const std::string &email) {
+message::GetVarifyRsp VarifyGrpcClient::GetVarityCode(const std::string& email) {
     message::GetVarifyRsp rsp;
     message::GetVarifyReq req;
     grpc::ClientContext context;
@@ -100,7 +123,3 @@ message::GetVarifyRsp VarifyGrpcClient::GetVarityCode(const std::string &email) 
     }
     return rsp;
 }
-
-
-
-

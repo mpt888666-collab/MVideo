@@ -6,14 +6,12 @@
 #include <string>
 
 namespace redis {
-
 bool VarifyCodeStore::Has(RedisMgr& redis, const std::string& email) {
     std::string code;
     return redis.Get(VarifyCodeKey + email, code);
 }
 
-VarifyCodeStatus VarifyCodeStore::Check(RedisMgr& redis, const std::string& email,
-                                        const std::string& code) {
+VarifyCodeStatus VarifyCodeStore::Check(RedisMgr& redis, const std::string& email, const std::string& code) {
     static const std::string kScript = R"(
         local v = redis.call('GET', KEYS[1])
         if not v then return 2 end
@@ -22,19 +20,14 @@ VarifyCodeStatus VarifyCodeStore::Check(RedisMgr& redis, const std::string& emai
     )";
     const long long result = redis.EvalInt(kScript, {VarifyCodeKey + email}, {code});
     switch (result) {
-        case 1:
-            return VarifyCodeStatus::Match;
-        case 0:
-            return VarifyCodeStatus::Mismatch;
-        case 2:
-            return VarifyCodeStatus::NotFound;
-        default:
-            return VarifyCodeStatus::Error;
+        case 1: return VarifyCodeStatus::Match;
+        case 0: return VarifyCodeStatus::Mismatch;
+        case 2: return VarifyCodeStatus::NotFound;
+        default: return VarifyCodeStatus::Error;
     }
 }
 
-void VarifyCodeStore::Consume(RedisMgr& redis, const std::string& email,
-                              const std::string& code) {
+void VarifyCodeStore::Consume(RedisMgr& redis, const std::string& email, const std::string& code) {
     static const std::string kScript = R"(
         local v = redis.call('GET', KEYS[1])
         if v and string.lower(v) == string.lower(ARGV[1]) then
@@ -45,5 +38,4 @@ void VarifyCodeStore::Consume(RedisMgr& redis, const std::string& email,
     )";
     redis.EvalInt(kScript, {VarifyCodeKey + email}, {code});
 }
-
-} // namespace redis
+}  // namespace redis

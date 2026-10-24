@@ -23,8 +23,7 @@ std::string Base64Encode(const unsigned char* data, int length) {
         return {};
     }
     std::string result(static_cast<std::size_t>(4 * ((length + 2) / 3)), '\0');
-    const int written = EVP_EncodeBlock(
-            reinterpret_cast<unsigned char*>(result.data()), data, length);
+    const int written = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(result.data()), data, length);
     if (written < 0) {
         return {};
     }
@@ -38,8 +37,8 @@ std::vector<unsigned char> Base64Decode(const std::string& value) {
     }
     std::vector<unsigned char> result((value.size() / 4) * 3);
     const int written = EVP_DecodeBlock(
-            result.data(), reinterpret_cast<const unsigned char*>(value.data()),
-            static_cast<int>(value.size()));
+            result.data(), reinterpret_cast<const unsigned char*>(value.data()), static_cast<int>(value.size())
+    );
     if (written < 0) {
         return {};
     }
@@ -53,8 +52,7 @@ std::vector<unsigned char> Base64Decode(const std::string& value) {
     result.resize(static_cast<std::size_t>(written) - padding);
     return result;
 }
-
-} // namespace
+}  // namespace
 
 bool PasswordUtil::Hash(const std::string& password, std::string& encoded) {
     unsigned char salt[kSaltBytes];
@@ -62,15 +60,15 @@ bool PasswordUtil::Hash(const std::string& password, std::string& encoded) {
     if (RAND_bytes(salt, static_cast<int>(sizeof(salt))) != 1) {
         return false;
     }
-    if (PKCS5_PBKDF2_HMAC(password.data(), static_cast<int>(password.size()),
-                          salt, static_cast<int>(sizeof(salt)), kHashIterations,
-                          EVP_sha256(), static_cast<int>(sizeof(digest)), digest) != 1) {
+    if (PKCS5_PBKDF2_HMAC(
+                password.data(), static_cast<int>(password.size()), salt, static_cast<int>(sizeof(salt)),
+                kHashIterations, EVP_sha256(), static_cast<int>(sizeof(digest)), digest
+        ) != 1) {
         return false;
     }
 
-    encoded = kHashPrefix + std::to_string(kHashIterations)
-            + "$" + Base64Encode(salt, static_cast<int>(sizeof(salt)))
-            + "$" + Base64Encode(digest, static_cast<int>(sizeof(digest)));
+    encoded = kHashPrefix + std::to_string(kHashIterations) + "$" + Base64Encode(salt, static_cast<int>(sizeof(salt))) +
+              "$" + Base64Encode(digest, static_cast<int>(sizeof(digest)));
     return true;
 }
 
@@ -91,32 +89,27 @@ bool PasswordUtil::Verify(const std::string& password, const std::string& encode
     }
 
     int iterations = 0;
-    const std::string iterations_text = encoded.substr(iterations_begin,
-                                                       iterations_end - iterations_begin);
-    const auto parse_result = std::from_chars(iterations_text.data(),
-                                              iterations_text.data() + iterations_text.size(),
-                                              iterations);
-    if (parse_result.ec != std::errc() ||
-        parse_result.ptr != iterations_text.data() + iterations_text.size() ||
+    const std::string iterations_text = encoded.substr(iterations_begin, iterations_end - iterations_begin);
+    const auto parse_result =
+            std::from_chars(iterations_text.data(), iterations_text.data() + iterations_text.size(), iterations);
+    if (parse_result.ec != std::errc() || parse_result.ptr != iterations_text.data() + iterations_text.size() ||
         iterations < 1000 || iterations > 1000000) {
         return false;
     }
 
-    const auto salt = Base64Decode(encoded.substr(iterations_end + 1,
-                                                  salt_end - iterations_end - 1));
+    const auto salt = Base64Decode(encoded.substr(iterations_end + 1, salt_end - iterations_end - 1));
     const auto expected = Base64Decode(encoded.substr(salt_end + 1));
     if (salt.empty() || expected.empty()) {
         return false;
     }
 
     std::vector<unsigned char> actual(expected.size());
-    if (PKCS5_PBKDF2_HMAC(password.data(), static_cast<int>(password.size()),
-                          salt.data(), static_cast<int>(salt.size()), iterations,
-                          EVP_sha256(), static_cast<int>(actual.size()), actual.data()) != 1) {
+    if (PKCS5_PBKDF2_HMAC(
+                password.data(), static_cast<int>(password.size()), salt.data(), static_cast<int>(salt.size()),
+                iterations, EVP_sha256(), static_cast<int>(actual.size()), actual.data()
+        ) != 1) {
         return false;
     }
-    return actual.size() == expected.size() &&
-           CRYPTO_memcmp(actual.data(), expected.data(), actual.size()) == 0;
+    return actual.size() == expected.size() && CRYPTO_memcmp(actual.data(), expected.data(), actual.size()) == 0;
 }
-
-} // namespace security
+}  // namespace security

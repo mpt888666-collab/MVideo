@@ -3,74 +3,59 @@
 //
 
 #include "http/LogicSystem.h"
+
+#include "common/Validators.h"
 #include "const.h"
+#include "db/MySqlMgr.h"
+#include "http/AdmissionPool.h"
+#include "http/PostToPool.h"
 #include "net/HttpConnection.h"
 #include "redis/RedisMgr.h"
 #include "rpc/VarifyGrpcClient.h"
-#include "common/Validators.h"
+#include "service/LogicService.h"
 #include "service/RegisterService.h"
+#include "service/ResetPwdService.h"
 #include "service/VarifyCodeService.h"
+
 #include <boost/asio/post.hpp>
 #include <boost/asio/thread_pool.hpp>
+
 #include <atomic>
-#include <iostream>
+#include <chrono>
+#include <cstddef>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <string>
 #include <utility>
 
-#include "config/ConfigMgr.h"
+using http::PostToPool;
 
 namespace {
+struct ReplyState {
+    bool replied = false;
+};
 
-    boost::beast::http::status RegisterHttpStatus(int error) {
-        switch (error) {
-            case ErrorCodes::Success:
-                return boost::beast::http::status::ok;
-            case ErrorCodes::TooManyRequests:
-                return boost::beast::http::status::too_many_requests;
-            case ErrorCodes::UserExists:
-                return boost::beast::http::status::conflict;
-            case ErrorCodes::VarifyBackErr:
-                return boost::beast::http::status::service_unavailable;
-            case ErrorCodes::DBError:
-                return boost::beast::http::status::internal_server_error;
-            default:
-                return boost::beast::http::status::bad_request;
-        }
+boost::beast::http::status HttpStatusForError(int error) {
+    switch (error) {
+        case ErrorCodes::Success: return boost::beast::http::status::ok;
+        case ErrorCodes::TooManyRequests: return boost::beast::http::status::too_many_requests;
+        case ErrorCodes::UserExists: return boost::beast::http::status::conflict;
+        case ErrorCodes::RPCFailed: return boost::beast::http::status::bad_gateway;
+        case ErrorCodes::VarifyBackErr: return boost::beast::http::status::service_unavailable;
+        case ErrorCodes::DBError:
+        case ErrorCodes::MySqlError: return boost::beast::http::status::internal_server_error;
+        default: return boost::beast::http::status::bad_request;
     }
+}
 
-    std::size_t RpcThreadCount() {
-        static const std::size_t count = [] {
-            int value = 0;
-            try {
-                value = std::stoi(ConfigMgr::Inst()["GetServer"]["RpcThreads"]);
-            } catch (...) {
-            }
-            if (value <= 0) value = 16;
-            if (value > 64) value = 64;
-            return static_cast<std::size_t>(value);
-        }();
-        return count;
+std::string ClientIp(const std::shared_ptr<HttpConnection>& connection) {
+    try {
+        return connection->GetSocket().remote_endpoint().address().to_string();
+    } catch (...) {
+        return {};
     }
-
-    std::size_t RpcQueueLimit() {
-        static const std::size_t limit = [] {
-            int value = 0;
-            try {
-                value = std::stoi(ConfigMgr::Inst()["GetServer"]["RpcQueueLimit"]);
-            } catch (...) {
-            }
-            return static_cast<std::size_t>(value > 0 ? value : 64);
-        }();
-        return limit;
-    }
-
-    boost::asio::thread_pool& RpcWorkerPool() {
-        static boost::asio::thread_pool pool(RpcThreadCount());
-        return pool;
-    }
-
-    std::atomic<std::size_t> g_rpcQueued{0};
-    constexpr int kRpcQueueBudgetMs = 2500;
-
+}
 }
 
 LogicSystem::LogicSystem() {
@@ -78,13 +63,11 @@ LogicSystem::LogicSystem() {
     initPostHandlers();
 }
 
-void LogicSystem::RegGet(std::string url,
-                         std::function<void(std::shared_ptr<HttpConnection>)> handler) {
+void LogicSystem::RegGet(std::string url, std::function<void(std::shared_ptr<HttpConnection>)> handler) {
     _get_handlers.insert(std::make_pair(std::move(url), std::move(handler)));
 }
 
-void LogicSystem::RegPost(std::string url,
-                          std::function<void(std::shared_ptr<HttpConnection>)> handler) {
+void LogicSystem::RegPost(std::string url, std::function<void(std::shared_ptr<HttpConnection>)> handler) {
     _post_handlers.insert(std::make_pair(std::move(url), std::move(handler)));
 }
 
@@ -106,250 +89,452 @@ bool LogicSystem::HandlePost(const std::string& url, std::shared_ptr<HttpConnect
     return true;
 }
 
-void LogicSystem::initGetHandlers() {
-}
+void LogicSystem::initGetHandlers() {}
 
 void LogicSystem::initPostHandlers() {
     RegPost("/get_varifycode", [](std::shared_ptr<HttpConnection> connection) {
         connection->_response.set(boost::beast::http::field::content_type, "application/json");
-        auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-        auto send_json = std::make_shared<json>();
 
-        auto write = [connection, send_json](int err,boost::beast::http::status status =boost::beast::http::status::ok, const int retry_after = 0) {
-            (*send_json)["error"] = err;
-            connection->_response.result(status);
-            if (retry_after > 0) {
-                connection->_response.set(boost::beast::http::field::retry_after, std::to_string(retry_after));
-            }
-            boost::beast::ostream(connection->_response.body()) << send_json->dump();
-            connection->WriteResponse();
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection, state](int error, boost::beast::http::status status, int retry_after) {
+            boost::asio::post(
+                    connection->GetSocket().get_executor(), [connection, state, error, status, retry_after]() {
+                        if (state->replied || !connection->IsOpen()) {
+                            return;
+                        }
+                        state->replied = true;
+
+                        json response;
+                        response["error"] = error;
+                        connection->_response.result(status);
+                        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+                        if (retry_after > 0) {
+                            connection->_response.set(
+                                    boost::beast::http::field::retry_after, std::to_string(retry_after)
+                            );
+                        }
+                        boost::beast::ostream(connection->_response.body()) << response.dump();
+                        connection->WriteResponse();
+                    }
+            );
         };
 
-        auto writeFromWorker = [connection, write](int err, boost::beast::http::status status,
-                                                   int retry_after) {
-            boost::asio::post(connection->GetSocket().get_executor(),
-                              [write, err, status, retry_after]() {
-                                  write(err, status, retry_after);
-                              });
-        };
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        auto client_ip = ClientIp(connection);
+        connection->DeferResponse();
 
-        try {
-            auto req_json = json::parse(body_str);
-            auto email = validators::NormalizeEmail(
-                    req_json.value("email", std::string{}));
-            if (!validators::IsValidEmail(email)) {
-                write(ErrorCodes::Error_Email);
-                return;
-            }
-
-            auto redis = RedisMgr::GetInstance();
-            if (!redis->IsValid()) {
-                std::cerr << "RedisMgr not connected" << std::endl;
-                write(ErrorCodes::VarifyBackErr);
-                return;
-            }
-
-            std::string ip;
-            try {
-                ip = connection->GetSocket().remote_endpoint().address().to_string();
-            } catch (...) {
-                write(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request);
-                return;
-            }
-
-            switch (service::VarifyCodeService::AcquireSlot(*redis, email, ip)) {
-                case service::VarifyCodeService::SlotResult::Allowed:
-                    break;
-                case service::VarifyCodeService::SlotResult::GlobalLimited:
-                    write(ErrorCodes::TooManyRequests,
-                          boost::beast::http::status::too_many_requests, 1);
-                    return;
-                case service::VarifyCodeService::SlotResult::MailCooldown:
-                    write(ErrorCodes::TooManyRequests,
-                          boost::beast::http::status::too_many_requests, kMailCooldown);
-                    return;
-                case service::VarifyCodeService::SlotResult::IpCooldown:
-                    write(ErrorCodes::TooManyRequests,
-                          boost::beast::http::status::too_many_requests, kIpCooldown);
-                    return;
-                case service::VarifyCodeService::SlotResult::QuotaExceeded:
-                    write(ErrorCodes::TooManyRequests,
-                          boost::beast::http::status::too_many_requests, 3600);
-                    return;
-                case service::VarifyCodeService::SlotResult::CacheHit:
-                    write(ErrorCodes::Success);
-                    return;
-                default:
-                    write(ErrorCodes::VarifyBackErr,
-                          boost::beast::http::status::service_unavailable);
-                    return;
-            }
-
-            if (g_rpcQueued.fetch_add(1, std::memory_order_relaxed) >= RpcQueueLimit()) {
-                g_rpcQueued.fetch_sub(1, std::memory_order_relaxed);
-                service::VarifyCodeService::ReleaseSlot(*redis, email, ip);
-                write(ErrorCodes::TooManyRequests,
-                      boost::beast::http::status::service_unavailable, 1);
-                return;
-            }
-
-            const auto enqueued_at = std::chrono::steady_clock::now();
-            connection->DeferResponse();
-            boost::asio::post(RpcWorkerPool(),
-                              [email, redis, writeFromWorker, ip, connection, enqueued_at]() {
-                struct QueueGuard {
-                    std::atomic<std::size_t>& count;
-                    ~QueueGuard() { count.fetch_sub(1, std::memory_order_relaxed); }
-                } guard{g_rpcQueued};
-
-                if (!connection->IsOpen()) {
-                    service::VarifyCodeService::ReleaseSlot(*redis, email, ip);
-                    return;
-                }
-                if (std::chrono::steady_clock::now() - enqueued_at >
-                    std::chrono::milliseconds(kRpcQueueBudgetMs)) {
-                    service::VarifyCodeService::ReleaseSlot(*redis, email, ip);
-                    writeFromWorker(ErrorCodes::TooManyRequests,
-                                    boost::beast::http::status::service_unavailable, 1);
-                    return;
-                }
-
-                int error = ErrorCodes::VarifyBackErr;
-                std::string code;
-                try {
-                    auto response = VarifyGrpcClient::GetInstance()->GetVarityCode(email);
-                    error = response.error();
-                    code = response.code();
-                } catch (const std::exception& e) {
-                    std::cerr << "[RPC] GetVarityCode exception: " << e.what() << std::endl;
-                }
-
-                if (error != ErrorCodes::Success) {
-                    service::VarifyCodeService::ReleaseSlot(*redis, email, ip);
-                    writeFromWorker(error, boost::beast::http::status::ok, 0);
-                    return;
-                }
-                if (!redis->SetEx(VarifyCodeKey + email, code, std::chrono::seconds(300))) {
-                    service::VarifyCodeService::ReleaseSlot(*redis, email, ip);
-                    writeFromWorker(ErrorCodes::VarifyBackErr,
-                                    boost::beast::http::status::ok, 0);
-                    return;
-                }
-                writeFromWorker(ErrorCodes::Success, boost::beast::http::status::ok, 0);
-            });
-        } catch (const std::exception&) {
-            write(ErrorCodes::Error_Json);
+        if (client_ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, 0);
+            return;
         }
+
+        auto redis = RedisMgr::GetInstance();
+        PostToPool(
+                admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs,
+                connection,
+                [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1); },
+                [send]() { send(ErrorCodes::VarifyBackErr, boost::beast::http::status::service_unavailable, 0); }, {},
+                [body = std::move(body), client_ip, redis, send, connection]() mutable {
+                    json request;
+                    try {
+                        request = json::parse(body);
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0);
+                        return;
+                    }
+                    if (!request.is_object()) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0);
+                        return;
+                    }
+
+                    std::string email;
+                    try {
+                        email = validators::NormalizeEmail(request.value("email", std::string{}));
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0);
+                        return;
+                    }
+                    if (!validators::IsValidEmail(email)) {
+                        send(ErrorCodes::Error_Email, boost::beast::http::status::bad_request, 0);
+                        return;
+                    }
+                    if (!redis->IsValid()) {
+                        send(ErrorCodes::VarifyBackErr, boost::beast::http::status::service_unavailable, 0);
+                        return;
+                    }
+
+                    switch (service::VarifyCodeService::AcquireSlot(*redis, email, client_ip)) {
+                        case service::VarifyCodeService::SlotResult::Allowed: break;
+                        case service::VarifyCodeService::SlotResult::GlobalLimited:
+                            send(ErrorCodes::TooManyRequests, boost::beast::http::status::too_many_requests, 1);
+                            return;
+                        case service::VarifyCodeService::SlotResult::MailCooldown:
+                            send(ErrorCodes::TooManyRequests, boost::beast::http::status::too_many_requests,
+                                 kMailCooldown);
+                            return;
+                        case service::VarifyCodeService::SlotResult::IpCooldown:
+                            send(ErrorCodes::TooManyRequests, boost::beast::http::status::too_many_requests,
+                                 kIpCooldown);
+                            return;
+                        case service::VarifyCodeService::SlotResult::QuotaExceeded:
+                            send(ErrorCodes::TooManyRequests, boost::beast::http::status::too_many_requests, 3600);
+                            return;
+                        case service::VarifyCodeService::SlotResult::CacheHit:
+                            send(ErrorCodes::Success, boost::beast::http::status::ok, 0);
+                            return;
+                        default:
+                            send(ErrorCodes::VarifyBackErr, boost::beast::http::status::service_unavailable, 0);
+                            return;
+                    }
+
+                    auto release_slot = [redis, email, client_ip]() {
+                        service::VarifyCodeService::ReleaseSlot(*redis, email, client_ip);
+                    };
+
+                    PostToPool(
+                            rpc::RpcWorkerPool(), rpc::g_rpcQueued, rpc::RpcQueueLimit(), rpc::kRpcQueueBudgetMs,
+                            connection,
+                            [release_slot, send]() {
+                                release_slot();
+                                send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1);
+                            },
+                            [release_slot, send]() {
+                                release_slot();
+                                send(ErrorCodes::VarifyBackErr, boost::beast::http::status::service_unavailable, 0);
+                            },
+                            [release_slot]() { release_slot(); },
+                            [email, redis, send, release_slot]() {
+                                int error = ErrorCodes::VarifyBackErr;
+                                std::string code;
+                                try {
+                                    auto response = VarifyGrpcClient::GetInstance()->GetVarityCode(email);
+                                    error = response.error();
+                                    code = response.code();
+                                } catch (const std::exception& e) {
+                                    LogThrottled("GetVarityCode exception", e.what());
+                                }
+
+                                if (error != ErrorCodes::Success) {
+                                    release_slot();
+                                    send(error, HttpStatusForError(error), 0);
+                                    return;
+                                }
+                                if (!redis->SetEx(VarifyCodeKey + email, code, std::chrono::seconds(300))) {
+                                    release_slot();
+                                    send(ErrorCodes::VarifyBackErr, boost::beast::http::status::service_unavailable, 0);
+                                    return;
+                                }
+                                send(ErrorCodes::Success, boost::beast::http::status::ok, 0);
+                            }
+                    );
+                }
+        );
     });
 
     RegPost("/user_register", [](std::shared_ptr<HttpConnection> connection) {
         connection->_response.set(boost::beast::http::field::content_type, "application/json");
-        auto body_str = boost::beast::buffers_to_string(connection->_request.body().data());
-        auto send_json = std::make_shared<json>();
 
-        auto send = [connection, send_json](int err, boost::beast::http::status status,
-                                            const std::string& message, int retry_after,
-                                            long long user_id) {
-            (*send_json)["error"] = err;
-            if (!message.empty()) {
-                (*send_json)["msg"] = message;
-            }
-            if (user_id > 0) {
-                (*send_json)["user_id"] = user_id;
-            }
-            connection->_response.result(status);
-            connection->_response.set(boost::beast::http::field::content_type, "application/json");
-            if (retry_after > 0) {
-                connection->_response.set(boost::beast::http::field::retry_after,
-                                          std::to_string(retry_after));
-            }
-            boost::beast::ostream(connection->_response.body()) << send_json->dump();
-            connection->WriteResponse();
-        };
-
-        auto sendFromWorker = [connection, send](int err, boost::beast::http::status status,
-                                                 const std::string& message, int retry_after,
-                                                 long long user_id) {
-            boost::asio::post(connection->GetSocket().get_executor(),
-                              [send, err, status, message, retry_after, user_id]() {
-                                  send(err, status, message, retry_after, user_id);
-                              });
-        };
-
-        try {
-            auto req_json = json::parse(body_str);
-            if (!req_json.is_object()) {
-                send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request,
-                     "请求体必须是 JSON 对象", 0, 0);
-                return;
-            }
-
-            service::RegisterRequest request;
-            request.account = req_json.value("account", std::string{});
-            request.password = req_json.value("password", std::string{});
-            request.username = req_json.value("username", std::string{});
-            request.email = req_json.value("email", std::string{});
-            request.phone = req_json.value("phone", std::string{});
-            request.code = req_json.value("code", std::string{});
-
-            std::string client_ip;
-            try {
-                client_ip = connection->GetSocket().remote_endpoint().address().to_string();
-            } catch (...) {
-                send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request,
-                     "无法获取客户端 IP", 0, 0);
-                return;
-            }
-
-            if (g_rpcQueued.fetch_add(1, std::memory_order_relaxed) >= RpcQueueLimit()) {
-                g_rpcQueued.fetch_sub(1, std::memory_order_relaxed);
-                send(ErrorCodes::TooManyRequests,
-                     boost::beast::http::status::service_unavailable,
-                     "服务器繁忙，请稍后重试", 1, 0);
-                return;
-            }
-
-            const auto enqueued_at = std::chrono::steady_clock::now();
-            connection->DeferResponse();
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection,
+                     state](int error, boost::beast::http::status status, std::string message, int retry_after,
+                            long long user_id) {
             boost::asio::post(
-                    RpcWorkerPool(),
-                    [connection, sendFromWorker, request = std::move(request),
-                     client_ip = std::move(client_ip), enqueued_at]() {
-                        struct QueueGuard {
-                            std::atomic<std::size_t>& count;
-                            ~QueueGuard() { count.fetch_sub(1, std::memory_order_relaxed); }
-                        } guard{g_rpcQueued};
-
-                        try {
-                            if (!connection->IsOpen()) {
-                                return;
-                            }
-                            if (std::chrono::steady_clock::now() - enqueued_at >
-                                std::chrono::milliseconds(kRpcQueueBudgetMs)) {
-                                sendFromWorker(ErrorCodes::TooManyRequests,
-                                               boost::beast::http::status::service_unavailable,
-                                               "服务器繁忙，请稍后重试", 1, 0);
-                                return;
-                            }
-
-                            const auto result = service::RegisterService::Register(
-                                    request, client_ip);
-                            sendFromWorker(result.error, RegisterHttpStatus(result.error),
-                                           result.message, result.retry_after, result.user_id);
-                        } catch (const std::exception& e) {
-                            std::cerr << "[register] worker exception: " << e.what() << std::endl;
-                            sendFromWorker(ErrorCodes::DBError,
-                                           boost::beast::http::status::internal_server_error,
-                                           "注册失败，请稍后重试", 0, 0);
+                    connection->GetSocket().get_executor(),
+                    [connection, state, error, status, message = std::move(message), retry_after, user_id]() {
+                        if (state->replied || !connection->IsOpen()) {
+                            return;
                         }
-                    });
-        } catch (const json::exception&) {
-            send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request,
-                 "请求字段类型错误或 JSON 非法", 0, 0);
-        } catch (const std::exception& e) {
-            std::cerr << "[register] exception: " << e.what() << std::endl;
-            send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error,
-                 "注册失败，请稍后重试", 0, 0);
+                        state->replied = true;
+
+                        json response;
+                        response["error"] = error;
+                        if (!message.empty()) {
+                            response["msg"] = message;
+                        }
+                        if (user_id > 0) {
+                            response["user_id"] = user_id;
+                        }
+                        connection->_response.result(status);
+                        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+                        if (retry_after > 0) {
+                            connection->_response.set(
+                                    boost::beast::http::field::retry_after, std::to_string(retry_after)
+                            );
+                        }
+                        boost::beast::ostream(connection->_response.body()) << response.dump();
+                        connection->WriteResponse();
+                    }
+            );
+        };
+
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        auto client_ip = ClientIp(connection);
+        connection->DeferResponse();
+
+        if (client_ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, {}, 0, 0);
+            return;
         }
+
+        PostToPool(
+                admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs,
+                connection,
+                [send]() {
+                    send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, "server busy", 1,
+                         0);
+                },
+                [send]() {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, "invalid json", 0, 0);
+                },
+                {},
+                [body = std::move(body), client_ip, send, connection]() mutable {
+                    json request_json;
+                    try {
+                        request_json = json::parse(body);
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, "invalid json", 0, 0);
+                        return;
+                    }
+                    if (!request_json.is_object()) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request,
+                             "request body must be a JSON object", 0, 0);
+                        return;
+                    }
+
+                    service::RegisterRequest request;
+                    try {
+                        request.account = request_json.value("account", std::string{});
+                        request.password = request_json.value("password", std::string{});
+                        request.username = request_json.value("username", std::string{});
+                        request.email = request_json.value("email", std::string{});
+                        request.phone = request_json.value("phone", std::string{});
+                        request.code = request_json.value("code", std::string{});
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, "invalid field type", 0,
+                             0);
+                        return;
+                    }
+
+                    service::RegisterRequest normalized;
+                    const auto admitted = service::RegisterService::Admit(request, client_ip, normalized);
+                    if (admitted.error != ErrorCodes::Success) {
+                        send(admitted.error, HttpStatusForError(admitted.error), admitted.message, admitted.retry_after,
+                             0);
+                        return;
+                    }
+
+                    PostToPool(
+                            mysql::MysqlPool(), mysql::mysqlQueued, mysql::MysqlPoolQueueLimit(),
+                            mysql::kMysqlQueueBudgetMs, connection,
+                            [send]() {
+                                send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable,
+                                     "server busy", 1, 0);
+                            },
+                            [send]() {
+                                send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error,
+                                     "register failed", 0, 0);
+                            },
+                            {},
+                            [normalized = std::move(normalized), send]() mutable {
+                                const auto result = service::RegisterService::Register(normalized);
+                                send(result.error, HttpStatusForError(result.error), result.message, result.retry_after,
+                                     result.user_id);
+                            }
+                    );
+                }
+        );
+    });
+
+    RegPost("/reset_pwd", [](std::shared_ptr<HttpConnection> connection) {
+        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection, state](int error, boost::beast::http::status status, int retry_after) {
+            boost::asio::post(
+                    connection->GetSocket().get_executor(), [connection, state, error, status, retry_after]() {
+                        if (state->replied || !connection->IsOpen()) {
+                            return;
+                        }
+                        state->replied = true;
+
+                        json response;
+                        response["error"] = error;
+                        connection->_response.result(status);
+                        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+                        if (retry_after > 0) {
+                            connection->_response.set(
+                                    boost::beast::http::field::retry_after, std::to_string(retry_after)
+                            );
+                        }
+                        boost::beast::ostream(connection->_response.body()) << response.dump();
+                        connection->WriteResponse();
+                    }
+            );
+        };
+
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        auto client_ip = ClientIp(connection);
+        connection->DeferResponse();
+
+        if (client_ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, 0);
+            return;
+        }
+
+        PostToPool(
+                admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs,
+                connection,
+                [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1); },
+                [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0); }, {},
+                [body = std::move(body), client_ip, send, connection]() mutable {
+                    json request_json;
+                    try {
+                        request_json = json::parse(body);
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0);
+                        return;
+                    }
+                    if (!request_json.is_object()) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0);
+                        return;
+                    }
+
+                    service::ResetPwdRequest request;
+                    try {
+                        request.email = request_json.value("email", std::string{});
+                        request.code = request_json.value("code", std::string{});
+                        request.new_password = request_json.value("password", std::string{});
+                        request.confirm = request_json.value("confirm", std::string{});
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0);
+                        return;
+                    }
+
+                    service::ResetPwdRequest normalized;
+                    const auto admitted = service::ResetPwdService::Admit(request, client_ip, normalized);
+                    if (admitted.ec != ErrorCodes::Success) {
+                        send(admitted.ec, HttpStatusForError(admitted.ec), admitted.retry_after);
+                        return;
+                    }
+
+                    PostToPool(
+                            mysql::MysqlPool(), mysql::mysqlQueued, mysql::MysqlPoolQueueLimit(),
+                            mysql::kMysqlQueueBudgetMs, connection,
+                            [send]() {
+                                send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1);
+                            },
+                            [send]() {
+                                send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error, 0);
+                            },
+                            {},
+                            [normalized = std::move(normalized), send]() mutable {
+                                const auto result = service::ResetPwdService::ResetPwd(normalized);
+                                send(result.ec, HttpStatusForError(result.ec), result.retry_after);
+                            }
+                    );
+                }
+        );
+    });
+
+    RegPost("/logic_user", [](std::shared_ptr<HttpConnection> connection) {
+        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection,
+                     state](int error, boost::beast::http::status status, int retry_after, unsigned long long user_id,
+                            const std::string& host = "", const std::string& port = "", const std::string& token = "") {
+            boost::asio::post(
+                    connection->GetSocket().get_executor(),
+                    [connection, state, error, status, retry_after, user_id, host, port, token]() {
+                        if (state->replied || !connection->IsOpen()) {
+                            return;
+                        }
+                        state->replied = true;
+
+                        json response;
+                        response["ec"] = error;
+                        response["host"] = host;
+                        response["port"] = port;
+                        response["token"] = token;
+                        response["user_id"] = user_id;
+                        connection->_response.result(status);
+                        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+                        if (retry_after > 0) {
+                            connection->_response.set(
+                                    boost::beast::http::field::retry_after, std::to_string(retry_after)
+                            );
+                        }
+                        boost::beast::ostream(connection->_response.body()) << response.dump();
+                        connection->WriteResponse();
+                    }
+            );
+        };
+
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        auto client_ip = ClientIp(connection);
+        connection->DeferResponse();
+
+        if (client_ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, 0, 0);
+            return;
+        }
+
+        PostToPool(
+                admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs,
+                connection,
+                [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1, 0); },
+                [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0); }, {},
+                [body = std::move(body), client_ip, send, connection]() mutable {
+                    json request_json;
+                    try {
+                        request_json = json::parse(body);
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                        return;
+                    }
+                    if (!request_json.is_object()) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                        return;
+                    }
+
+                    service::LogicRequest request;
+                    try {
+                        request.email = request_json.value("email", std::string{});
+                        request.password = request_json.value("password", std::string{});
+                        request.request_id = request_json.value("request_id", std::string{});
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                        return;
+                    }
+
+                    service::LogicRequest normalized;
+                    const auto admitted = service::LogicService::Admit(request, client_ip, normalized);
+                    if (admitted.ec != ErrorCodes::Success) {
+                        send(admitted.ec, HttpStatusForError(admitted.ec), admitted.retry_after, 0);
+                        return;
+                    }
+
+                    PostToPool(
+                            mysql::MysqlPool(), mysql::mysqlQueued, mysql::MysqlPoolQueueLimit(),
+                            mysql::kMysqlQueueBudgetMs, connection,
+                            [send]() {
+                                send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1,
+                                     0);
+                            },
+                            [send]() {
+                                send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error, 0, 0);
+                            },
+                            {},
+                            [normalized = std::move(normalized), send, connection]() mutable {
+                                service::LogicService::Logic(
+                                        normalized, connection, [send](const service::LogicResponse& response) {
+                                            send(response.ec, HttpStatusForError(response.ec), response.retry_after,
+                                                 response.user_id, response.host, response.port, response.token);
+                                        }
+                                );
+                            }
+                    );
+                }
+        );
     });
 }

@@ -19,10 +19,11 @@ protected:
     Singleton& operator=(const Singleton&) = delete;
 
     Singleton& operator=(Singleton&&) = delete;
+
 public:
     static std::shared_ptr<T> GetInstance() {
         static std::shared_ptr<T> instance = std::shared_ptr<T>(new T());
         return instance;
     }
 };
-#endif //GETSERVER_SINGLETON_H
+#endif  // GETSERVER_SINGLETON_H

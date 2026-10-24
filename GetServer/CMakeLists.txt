@@ -34,10 +34,12 @@ endif()
 find_package(Boost CONFIG REQUIRED COMPONENTS system thread filesystem)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 find_package(redis++ CONFIG REQUIRED)
+
 if(WIN32)
     find_package(unofficial-libmysql CONFIG REQUIRED)
     set(CHAT_MYSQL_TARGET unofficial::libmysql::libmysql)
@@ -58,13 +60,12 @@ endif()
 set(PROTO_FILE "${CMAKE_CURRENT_SOURCE_DIR}/message.proto")
 set(GENERATED_SRCS "")
 if(EXISTS "${PROTO_FILE}")
-    find_package(Protobuf CONFIG REQUIRED)
     get_filename_component(PROTO_NAME "${PROTO_FILE}" NAME_WE)
 
-    set(PB_CC   "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_NAME}.pb.cc")
-    set(PB_H    "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_NAME}.pb.h")
+    set(PB_CC "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_NAME}.pb.cc")
+    set(PB_H "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_NAME}.pb.h")
     set(GRPC_CC "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_NAME}.grpc.pb.cc")
-    set(GRPC_H  "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_NAME}.grpc.pb.h")
+    set(GRPC_H "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_NAME}.grpc.pb.h")
 
     add_custom_command(
         OUTPUT ${PB_CC} ${PB_H} ${GRPC_CC} ${GRPC_H}
@@ -86,43 +87,52 @@ add_executable(GetServer
     main.cpp
     const.h
 
-    config/ConfigMgr.h
-    config/ConfigMgr.cpp
-
     common/Singleton.h
-    common/Validators.h
     common/Validators.cpp
+    common/Validators.h
 
-    security/PasswordUtil.h
-    security/PasswordUtil.cpp
+    config/ConfigMgr.cpp
+    config/ConfigMgr.h
 
-    db/MySqlMgr.h
     db/MySqlMgr.cpp
+    db/MySqlMgr.h
 
-    redis/RedisMgr.h
-    redis/RedisMgr.cpp
-    redis/RateLimiter.h
-    redis/RateLimiter.cpp
-    redis/VarifyCodeStore.h
-    redis/VarifyCodeStore.cpp
-
-    service/RegisterService.h
-    service/RegisterService.cpp
-    service/VarifyCodeService.h
-    service/VarifyCodeService.cpp
-
-    http/LogicSystem.h
+    http/AdmissionPool.h
     http/LogicSystem.cpp
+    http/LogicSystem.h
+    http/PostToPool.h
 
-    net/Server.h
-    net/Server.cpp
-    net/HttpConnection.h
-    net/HttpConnection.cpp
-    net/AsioIOServicePool.h
     net/AsioIOServicePool.cpp
+    net/AsioIOServicePool.h
+    net/HttpConnection.cpp
+    net/HttpConnection.h
+    net/Server.cpp
+    net/Server.h
 
-    rpc/VarifyGrpcClient.h
+    redis/RateLimiter.cpp
+    redis/RateLimiter.h
+    redis/RedisMgr.cpp
+    redis/RedisMgr.h
+    redis/VarifyCodeStore.cpp
+    redis/VarifyCodeStore.h
+
+    rpc/StatusGrpcClient.cpp
+    rpc/StatusGrpcClient.h
     rpc/VarifyGrpcClient.cpp
+    rpc/VarifyGrpcClient.h
+    rpc/common.h
+
+    security/PasswordUtil.cpp
+    security/PasswordUtil.h
+
+    service/LogicService.cpp
+    service/LogicService.h
+    service/RegisterService.cpp
+    service/RegisterService.h
+    service/ResetPwdService.cpp
+    service/ResetPwdService.h
+    service/VarifyCodeService.cpp
+    service/VarifyCodeService.h
 
     ${GENERATED_SRCS}
 )

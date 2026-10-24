@@ -9,7 +9,6 @@
 class RedisMgr;
 
 namespace redis {
-
 struct RateRule {
     std::string key;
     long long limit;
@@ -22,10 +21,7 @@ public:
     static int Acquire(RedisMgr& redis, const std::vector<RateRule>& rules);
 
     // 释放时先删除前 lock_count 个锁 key，再递减后面的计数 key
-    static void Release(RedisMgr& redis, std::size_t lock_count,
-                        const std::vector<std::string>& keys);
+    static void Release(RedisMgr& redis, std::size_t lock_count, const std::vector<std::string>& keys);
 };
-
-} // namespace redis
-
-#endif // GETSERVER_REDIS_RATELIMITER_H
+}  // namespace redis
+#endif  // GETSERVER_REDIS_RATELIMITER_H

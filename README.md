@@ -195,14 +195,17 @@ cmake --build cmake-build-release -j
 [GetServer]
 Host = 0.0.0.0
 Port = 8080
+IoThreads = 16
+AdmissionThreads = 4
+AdmissionQueueLimit = 1024
 RpcThreads = 16
-RpcQueueLimit = 64
+RpcQueueLimit = 512
 
 [RedisServer]
 Host = 127.0.0.1
 Port = 6379
 Db = 0
-Size = 8
+Size = 32
 
 [MySQLServer]
 Host = 127.0.0.1
@@ -210,11 +213,14 @@ User = root
 Password = <your-password>
 Db = MVideo
 Port = 3306
-Pool_size = 5
+Pool_size = 16
+MySQL_Threads = 16
+MySQLQueueLimit = 512
 
 [VarifyServer]
 Host = 127.0.0.1
 Port = 50051
+StubPoolSize = 16
 ```
 
 ### 运行
