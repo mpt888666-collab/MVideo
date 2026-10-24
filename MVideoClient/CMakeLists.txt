@@ -93,6 +93,7 @@ endforeach()
 qt_add_qml_module(MVideoClient
         URI MVideoClient
         VERSION 1.0
+        OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/qml_modules"
         QML_FILES
                 ${MVIDEO_QML_FILES}
 )

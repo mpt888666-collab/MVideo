@@ -15,7 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  VCPKG_CACHE_VERSION: v3
+  VCPKG_CACHE_VERSION: v4
+  VCPKG_COMMIT: bf19794383e8fb95eba5aa553235bc8ec2271688
   QT_VERSION: 6.8.3
 
 jobs:
@@ -143,7 +144,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .cache/vcpkg/tool
-          key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_CACHE_VERSION }}
+          key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_COMMIT }}
 
       - name: Restore vcpkg packages
         id: vcpkg-pkgs
@@ -152,10 +153,12 @@ jobs:
           path: |
             .cache/vcpkg/downloads
             .cache/vcpkg/bincache
-          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}
           restore-keys: |
-            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-
-            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ env.VCPKG_COMMIT }}-
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ env.VCPKG_CACHE_VERSION }}-${{ env.VCPKG_COMMIT }}-
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-
+            vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-
 
       - name: Setup vcpkg
         shell: bash
@@ -169,13 +172,16 @@ jobs:
 
           mkdir -p "$WORKSPACE_POSIX/.cache/vcpkg"
           VCPKG_ROOT_POSIX="$WORKSPACE_POSIX/.cache/vcpkg/tool"
+          if [ ! -d "$VCPKG_ROOT_POSIX/.git" ]; then
+            mkdir -p "$VCPKG_ROOT_POSIX"
+            git -C "$VCPKG_ROOT_POSIX" init
+            git -C "$VCPKG_ROOT_POSIX" remote add origin https://github.com/microsoft/vcpkg.git
+          fi
+
+          git -C "$VCPKG_ROOT_POSIX" fetch --depth 1 origin "$VCPKG_COMMIT"
+          git -C "$VCPKG_ROOT_POSIX" checkout --force --detach FETCH_HEAD
+
           if [ ! -x "$VCPKG_ROOT_POSIX/vcpkg" ] && [ ! -x "$VCPKG_ROOT_POSIX/vcpkg.exe" ]; then
-            if [ -d "$VCPKG_ROOT_POSIX/.git" ]; then
-              git -C "$VCPKG_ROOT_POSIX" fetch --depth 1 origin
-              git -C "$VCPKG_ROOT_POSIX" reset --hard FETCH_HEAD
-            else
-              git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT_POSIX"
-            fi
             if [ "$RUNNER_OS" = "Windows" ]; then
               cmd.exe //c "$(cygpath -w "$VCPKG_ROOT_POSIX/bootstrap-vcpkg.bat") -disableMetrics"
             else
@@ -206,6 +212,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
           echo "vcpkg root: $VCPKG_ROOT_POSIX"
+          echo "vcpkg commit: $VCPKG_COMMIT"
           echo "vcpkg downloads: $DOWNLOADS_DIR"
           echo "vcpkg binary cache: $BINARY_DIR"
           "$VCPKG_BIN" version
@@ -292,7 +299,7 @@ jobs:
           path: |
             .cache/vcpkg/downloads
             .cache/vcpkg/bincache
-          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}
 
       - name: Save vcpkg packages after failure
         if: always() && steps.vcpkg-install.outcome == 'failure'
@@ -302,7 +309,7 @@ jobs:
           path: |
             .cache/vcpkg/downloads
             .cache/vcpkg/bincache
-          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
+          key: vcpkg-pkgs-${{ runner.os }}-${{ matrix.platform.triplet }}-${{ matrix.project }}-${{ env.VCPKG_CACHE_VERSION }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles(format('{0}/vcpkg.json', matrix.project)) }}-failed-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save vcpkg tool
         if: always() && steps.vcpkg-tool.outputs.cache-hit != 'true'
@@ -310,7 +317,7 @@ jobs:
         continue-on-error: true
         with:
           path: .cache/vcpkg/tool
-          key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_CACHE_VERSION }}
+          key: vcpkg-tool-${{ runner.os }}-${{ env.VCPKG_COMMIT }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

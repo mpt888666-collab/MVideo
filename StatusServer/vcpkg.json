@@ -3,6 +3,7 @@
   "name": "mvideo-statusserver",
   "version-string": "0.1.0",
   "description": "MVideo status service dependencies",
+  "builtin-baseline": "bf19794383e8fb95eba5aa553235bc8ec2271688",
   "dependencies": [
     "boost-system",
     "boost-thread",
