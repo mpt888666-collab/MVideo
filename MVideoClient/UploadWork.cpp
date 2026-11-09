@@ -39,7 +39,7 @@ void UploadWork::slotBeginUploadVideo(ResponseVideoData task) {
     QNetworkRequest req{ QUrl(task.uploadUrl) };
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                      QNetworkRequest::ManualRedirectPolicy);
-    req.setTransferTimeout(0);          // 关掉传输超时，见下面的坑
+    req.setTransferTimeout(0);
 
     _reply = _manager->put(req, _file);
 
