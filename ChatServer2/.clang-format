@@ -1,0 +1,46 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++20
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 8
+ColumnLimit: 120
+AccessModifierOffset: -4
+
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+AlwaysBreakAfterReturnType: None
+BreakBeforeBinaryOperators: None
+BreakConstructorInitializers: BeforeColon
+PackConstructorInitializers: Never
+
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: true
+BinPackParameters: true
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+
+DerivePointerAlignment: false
+PointerAlignment: Left
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpacesBeforeTrailingComments: 2
+AlignTrailingComments: true
+AlignEscapedNewlines: Left
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: true
+FixNamespaceComments: true
+NamespaceIndentation: None
+IndentCaseLabels: true
+Cpp11BracedListStyle: true
+SortIncludes: Never
+IncludeBlocks: Preserve
+SeparateDefinitionBlocks: Always
+InsertNewlineAtEOF: true
+LineEnding: LF

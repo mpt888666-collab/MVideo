@@ -20,7 +20,9 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/thread_pool.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <exception>
@@ -28,7 +30,7 @@
 #include <memory>
 #include <string>
 #include <utility>
-
+#include "service/UpLoadVideoServer.h"
 using http::PostToPool;
 
 namespace {
@@ -36,25 +38,39 @@ struct ReplyState {
     bool replied = false;
 };
 
-boost::beast::http::status HttpStatusForError(int error) {
-    switch (error) {
-        case ErrorCodes::Success: return boost::beast::http::status::ok;
-        case ErrorCodes::TooManyRequests: return boost::beast::http::status::too_many_requests;
-        case ErrorCodes::UserExists: return boost::beast::http::status::conflict;
-        case ErrorCodes::RPCFailed: return boost::beast::http::status::bad_gateway;
-        case ErrorCodes::VarifyBackErr: return boost::beast::http::status::service_unavailable;
-        case ErrorCodes::DBError:
-        case ErrorCodes::MySqlError: return boost::beast::http::status::internal_server_error;
-        default: return boost::beast::http::status::bad_request;
-    }
-}
-
 std::string ClientIp(const std::shared_ptr<HttpConnection>& connection) {
     try {
         return connection->GetSocket().remote_endpoint().address().to_string();
     } catch (...) {
         return {};
     }
+}
+
+void SendVideoResponse(
+        const std::shared_ptr<HttpConnection>& connection,
+        const std::shared_ptr<ReplyState>& state,
+        int ec,
+        boost::beast::http::status status,
+        int retry_after,
+        service::ResponseVideoData data
+) {
+    boost::asio::post(connection->GetSocket().get_executor(),
+        [connection, state, data = std::move(data), status, retry_after, ec] {
+            if (state->replied || !connection->IsOpen()) {
+                return;
+            }
+            state->replied = true;
+            json send_json;
+            send_json["error"] = ec;
+            send_json["msg"] = data.message;
+            send_json["request_id"] = data.requestId;
+            send_json["video_id"] = data.videoId;
+            send_json["object_key"] = data.objectKey;
+            send_json["upload_url"] = data.uploadUrl;
+            send_json["expires_in"] = data.expiresIn;
+            connection->SendJsonResponse(status, send_json.dump(), retry_after);
+        }
+    );
 }
 }
 
@@ -216,7 +232,7 @@ void LogicSystem::initPostHandlers() {
 
                                 if (error != ErrorCodes::Success) {
                                     release_slot();
-                                    send(error, HttpStatusForError(error), 0);
+                                    send(error, service::HttpStatusForError(error), 0);
                                     return;
                                 }
                                 if (!redis->SetEx(VarifyCodeKey + email, code, std::chrono::seconds(300))) {
@@ -318,7 +334,7 @@ void LogicSystem::initPostHandlers() {
                     service::RegisterRequest normalized;
                     const auto admitted = service::RegisterService::Admit(request, client_ip, normalized);
                     if (admitted.error != ErrorCodes::Success) {
-                        send(admitted.error, HttpStatusForError(admitted.error), admitted.message, admitted.retry_after,
+                        send(admitted.error, service::HttpStatusForError(admitted.error), admitted.message, admitted.retry_after,
                              0);
                         return;
                     }
@@ -337,7 +353,7 @@ void LogicSystem::initPostHandlers() {
                             {},
                             [normalized = std::move(normalized), send]() mutable {
                                 const auto result = service::RegisterService::Register(normalized);
-                                send(result.error, HttpStatusForError(result.error), result.message, result.retry_after,
+                                send(result.error, service::HttpStatusForError(result.error), result.message, result.retry_after,
                                      result.user_id);
                             }
                     );
@@ -413,7 +429,7 @@ void LogicSystem::initPostHandlers() {
                     service::ResetPwdRequest normalized;
                     const auto admitted = service::ResetPwdService::Admit(request, client_ip, normalized);
                     if (admitted.ec != ErrorCodes::Success) {
-                        send(admitted.ec, HttpStatusForError(admitted.ec), admitted.retry_after);
+                        send(admitted.ec, service::HttpStatusForError(admitted.ec), admitted.retry_after);
                         return;
                     }
 
@@ -429,7 +445,7 @@ void LogicSystem::initPostHandlers() {
                             {},
                             [normalized = std::move(normalized), send]() mutable {
                                 const auto result = service::ResetPwdService::ResetPwd(normalized);
-                                send(result.ec, HttpStatusForError(result.ec), result.retry_after);
+                                send(result.ec, service::HttpStatusForError(result.ec), result.retry_after);
                             }
                     );
                 }
@@ -442,10 +458,13 @@ void LogicSystem::initPostHandlers() {
         auto state = std::make_shared<ReplyState>();
         auto send = [connection,
                      state](int error, boost::beast::http::status status, int retry_after, unsigned long long user_id,
-                            const std::string& host = "", const std::string& port = "", const std::string& token = "") {
+                            const std::string& host = "", const std::string& port = "", const std::string& token = "",
+                            const std::string& account = "", const std::string& email = "",
+                            const std::string& phone = "", const std::string& username = "") {
             boost::asio::post(
                     connection->GetSocket().get_executor(),
-                    [connection, state, error, status, retry_after, user_id, host, port, token]() {
+                    [connection, state, error, status, retry_after, user_id, host, port, token, account, email, phone,
+                     username]() {
                         if (state->replied || !connection->IsOpen()) {
                             return;
                         }
@@ -457,6 +476,10 @@ void LogicSystem::initPostHandlers() {
                         response["port"] = port;
                         response["token"] = token;
                         response["user_id"] = user_id;
+                        response["account"] = account;
+                        response["email"] = email;
+                        response["phone"] = phone;
+                        response["username"] = username;
                         connection->_response.result(status);
                         connection->_response.set(boost::beast::http::field::content_type, "application/json");
                         if (retry_after > 0) {
@@ -502,6 +525,14 @@ void LogicSystem::initPostHandlers() {
                         request.email = request_json.value("email", std::string{});
                         request.password = request_json.value("password", std::string{});
                         request.request_id = request_json.value("request_id", std::string{});
+                        if (!request.request_id.empty() &&
+                            (request.request_id.size() > 64 ||
+                             !std::all_of(request.request_id.begin(), request.request_id.end(), [](unsigned char c) {
+                                 return std::isalnum(c) || c == '-' || c == '_';
+                             }))) {
+                            send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                            return;
+                        }
                     } catch (const json::exception&) {
                         send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
                         return;
@@ -510,7 +541,7 @@ void LogicSystem::initPostHandlers() {
                     service::LogicRequest normalized;
                     const auto admitted = service::LogicService::Admit(request, client_ip, normalized);
                     if (admitted.ec != ErrorCodes::Success) {
-                        send(admitted.ec, HttpStatusForError(admitted.ec), admitted.retry_after, 0);
+                        send(admitted.ec, service::HttpStatusForError(admitted.ec), admitted.retry_after, 0);
                         return;
                     }
 
@@ -528,13 +559,157 @@ void LogicSystem::initPostHandlers() {
                             [normalized = std::move(normalized), send, connection]() mutable {
                                 service::LogicService::Logic(
                                         normalized, connection, [send](const service::LogicResponse& response) {
-                                            send(response.ec, HttpStatusForError(response.ec), response.retry_after,
-                                                 response.user_id, response.host, response.port, response.token);
+                                            send(response.ec, service::HttpStatusForError(response.ec), response.retry_after,
+                                                 response.user_id, response.host, response.port, response.token,
+                                                 response.account, response.email, response.phone, response.username);
                                         }
                                 );
                             }
                     );
                 }
         );
+    });
+
+    RegPost("/video_upload", [](std::shared_ptr<HttpConnection> connection) {
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection, state](int ec, boost::beast::http::status status, int retry_after, service::ResponseVideoData data) {
+            SendVideoResponse(connection, state, ec, status, retry_after, std::move(data));
+        };
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        auto client_ip = ClientIp(connection);
+        connection->DeferResponse();
+
+        if (client_ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+            return;
+        }
+        PostToPool(admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs, connection,
+            [send]() {send(ErrorCodes::TooManyRequests,boost::beast::http::status::service_unavailable, 1, service::ResponseVideoData());},
+            [send](){send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());},{},
+            [body = std::move(body), client_ip, send, connection]() {
+                json request_json;
+                try {
+                    request_json = json::parse(body);
+                }catch (const std::exception& e) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+                if (!request_json.is_object()) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+                auto request_id = request_json["request_id"].get<std::string>();
+                if (!request_id.empty() && (request_id.size() > 64 || !std::all_of(request_id.begin(), request_id.end(), [](unsigned char c) {
+                                 return std::isalnum(c) || c == '-' || c == '_';
+                }))) {send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+                service::RequestVideoData v_request{};
+                try {
+                    v_request.uid = request_json["uid"].get<unsigned long long>();
+                    v_request.token = request_json.value("token", std::string{});
+                    v_request.title = request_json["title"].get<std::string>();
+                    v_request.description = request_json.value("description", std::string{});
+                    v_request.fileName = request_json["file_name"].get<std::string>();
+                    v_request.fileSize = request_json["file_size"].get<double>();
+                    v_request.requestId = request_id;
+                    for (const auto& tag : request_json["tags"]) {
+                        v_request.tags.push_back(tag.get<std::string>());
+                    }
+                } catch (const std::exception& e) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+
+                const auto admitted = service::UpLoadVideoServer::Admit(v_request, client_ip);
+                if (admitted.ec != ErrorCodes::Success) {
+                    auto fail_data = service::ResponseVideoData();
+                    fail_data.requestId = v_request.requestId;
+                    send(admitted.ec, service::HttpStatusForError(admitted.ec), 0, fail_data);
+                    return;
+                }
+                PostToPool(mysql::MysqlPool(), mysql::mysqlQueued, mysql::MysqlPoolQueueLimit(), mysql::kMysqlQueueBudgetMs, connection,
+                    [send](){send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1, service::ResponseVideoData());},
+                    [send](){send(ErrorCodes::StorageError, boost::beast::http::status::service_unavailable, 0, service::ResponseVideoData());}, {},
+                    [v_request, send]() {
+                        const auto session = service::CreateUploadSession(v_request);
+                        if (!session) {
+                            auto fail_data = service::ResponseVideoData();
+                            fail_data.requestId = v_request.requestId;
+                            fail_data.message = "failed to create upload session";
+                            send(ErrorCodes::StorageError, boost::beast::http::status::service_unavailable, 0, fail_data);
+                            return;
+                        }
+
+                        service::ResponseVideoData data{};
+                        data.videoId = session->videoId;
+                        data.objectKey = session->objectKey;
+                        data.uploadUrl = session->uploadUrl;
+                        data.requestId = session->requestId;
+                        data.expiresIn = session->expiresIn;
+                        send(ErrorCodes::Success, boost::beast::http::status::ok, 0, data);
+                    });
+            });
+    });
+
+    RegPost("/video_upload_complete", [](std::shared_ptr<HttpConnection> connection) {
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection, state](int ec, boost::beast::http::status status, int retry_after, service::ResponseVideoData data) {
+            SendVideoResponse(connection, state, ec, status, retry_after, std::move(data));
+        };
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        connection->DeferResponse();
+
+        PostToPool(admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs, connection,
+            [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1, service::ResponseVideoData()); },
+            [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData()); },
+            {},
+            [body = std::move(body), send, connection]() {
+                json request_json;
+                try {
+                    request_json = json::parse(body);
+                } catch (const std::exception&) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+                if (!request_json.is_object()) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+
+                service::CompleteUploadRequest request{};
+                try {
+                    request.uid = request_json.value("uid", 0ULL);
+                    request.videoId = request_json.value("video_id", 0ULL);
+                    request.requestId = request_json.value("request_id", std::string{});
+                    request.objectKey = request_json.value("object_key", std::string{});
+                } catch (const std::exception&) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+
+                if (request.uid == 0 || request.objectKey.empty() ||
+                    request.requestId.empty() || request.requestId.size() > 64 ||
+                    !std::all_of(request.requestId.begin(), request.requestId.end(), [](unsigned char ch) {
+                        return std::isalnum(ch) || ch == '-' || ch == '_';
+                    })) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, service::ResponseVideoData());
+                    return;
+                }
+
+                PostToPool(mysql::MysqlPool(), mysql::mysqlQueued, mysql::MysqlPoolQueueLimit(), mysql::kMysqlQueueBudgetMs, connection,
+                    [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1, service::ResponseVideoData()); },
+                    [send]() { send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error, 0, service::ResponseVideoData()); },
+                    {},
+                    [request, send]() {
+                        const auto result = service::CompleteUpload(request);
+                        service::ResponseVideoData data{};
+                        data.videoId = request.videoId;
+                        data.requestId = request.requestId;
+                        data.objectKey = request.objectKey;
+                        data.message = result.message;
+                        send(result.ec, service::HttpStatusForError(result.ec), 0, data);
+                    });
+            });
     });
 }

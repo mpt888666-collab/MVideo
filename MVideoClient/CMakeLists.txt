@@ -51,8 +51,15 @@ qt_add_executable(MVideoClient
         AuthServer.h
         AuthWork.cpp
         AuthWork.h
+        AuthTypes.h
         UserInfo.cpp
         UserInfo.h
+        TcpMgr.cpp
+        TcpMgr.h
+        TcpAuth.cpp
+        TcpAuth.h
+        UploadWork.cpp
+        UploadWork.h
 )
 
 target_include_directories(MVideoClient PRIVATE
@@ -83,6 +90,7 @@ set(MVIDEO_QML_FILES
         qml/RegisterPage.qml
         qml/ForgotPasswordPage.qml
         qml/HomePage.qml
+        qml/UploadDialog.qml
 )
 
 foreach(qml_file IN LISTS MVIDEO_QML_FILES)

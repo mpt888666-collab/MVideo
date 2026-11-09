@@ -38,6 +38,11 @@ enum ErrorCodes {
     MySqlError = 1015,          // MySQL 操作失败
     UserUNExists = 1016,        // 用户不存在（保留，外部不再直接暴露）
     ErrorPwdNotSuccess = 1017,  // 邮箱或密码错误
+    UploadDuplicated = 1018,    // 同一次投稿重复提交（幂等键已存在）
+    StorageError = 1019,
+    VideoNotFound = 1020,
+    UploadObjectMismatch = 1021,
+    UploadIncomplete = 1022,
 };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +94,14 @@ constexpr int kLogicIpPerHour = 600;
 constexpr int kLogicMailPerHour = 10;
 constexpr int kLogicMailPerDay = 30;
 
+//上传视频接口限流
+constexpr int kUploadVideoUserPerMinute = 10;
+constexpr int kUploadVideoIpPerMinute = 30;
+constexpr int kUploadVideoMaxTitleLen = 50;     // 标题最长 50 字
+constexpr int kUploadVideoMaxDescLen = 200;     // 描述最长 200 字
+constexpr std::size_t kUploadVideoMaxTags = 5;  // 最多 5 个标签
+constexpr double kUploadVideoMaxBytes = 2.0 * 1024 * 1024 * 1024;  // 单文件上限 2GB
+constexpr int kUploadTicketTtlSec = 24 * 3600;  // 上传会话保留 24 小时
 // ---------------------------------------------------------------------------
 // Logging helpers
 // ---------------------------------------------------------------------------
@@ -137,4 +150,8 @@ inline constexpr const char* LogicIpCdKeyMinute = "rl_login_ip_m_";
 inline constexpr const char* LogicIpCdKeyHour = "rl_login_ip_h_";
 inline constexpr const char* LogicMailCdKeyHour = "rl_login_mail_h_";
 inline constexpr const char* LogicMailCdKeyDay = "rl_login_mail_d_";
+
+inline constexpr const char* UploadVideoUserPerMinute = "upload:upload:uid:";
+inline constexpr const char* UploadVideoIpPerMinute = "upload:upload:ip:";
+inline constexpr const char* UploadTicketKey = "upload:ticket:";  // 上传会话（幂等键）
 #endif  // GETSERVER_CONST_H

@@ -2,8 +2,13 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
+#include <qqml.h>
 #include "HttpMgr.h"
+#include "UserInfo.h"
 #include <QThread>
+
+extern void qml_register_types_MVideoClient();
+
 int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
 
@@ -14,6 +19,11 @@ int main(int argc, char *argv[]) {
     QGuiApplication::setApplicationVersion(QStringLiteral("0.1.0"));
 
     QQuickStyle::setStyle(QStringLiteral("Basic"));
+
+    if (qmlTypeId("MVideoClient", 1, 0, "AuthServer") < 0)
+        qml_register_types_MVideoClient();
+    qmlRegisterSingletonInstance("MVideoClient", 1, 0, "UserInfo",
+                                 UserInfo::GetInstance().get());
 
     QQmlApplicationEngine engine;
     QObject::connect(

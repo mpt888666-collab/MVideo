@@ -14,7 +14,6 @@ AuthScaffold {
     signal registerRequested()
     signal forgotPasswordRequested()
     signal previewRequested()
-    signal loginSucceeded()
 
     function showFeedback(message, success) {
         root.feedbackMessage = message
@@ -28,10 +27,9 @@ AuthScaffold {
     Connections {
         target: AuthServer
 
-        function onLoginFinished(error, message, token, host, port, userId) {
+        function onLoginFinished(error, message) {
             if (error === 0) {
-                root.showFeedback(message.length > 0 ? message : "登录成功", true)
-                root.loginSucceeded()
+                root.showFeedback(message.length > 0 ? message : "正在连接聊天服务器...", true)
             } else {
                 root.showFeedback(message, false)
             }

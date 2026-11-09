@@ -88,8 +88,8 @@ void LogicService::Logic(const LogicRequest& normalized, std::shared_ptr<HttpCon
         done(response);
     };
 
-    unsigned long long user_id = 0;
-    const int login_result = MySqlMgr::GetInstance()->UserLogin(normalized.email, normalized.password, user_id);
+    MySqlMgr::UserProfile user;
+    const int login_result = MySqlMgr::GetInstance()->UserLogin(normalized.email, normalized.password, user);
     if (login_result < 0) {
         done_once(LogicResponse(ErrorCodes::DBError));
         return;
@@ -105,13 +105,14 @@ void LogicService::Logic(const LogicRequest& normalized, std::shared_ptr<HttpCon
         redis->Del(LogicMailCdKeyDay + normalized.email);
     }
 
+    const unsigned long long user_id = user.user_id;
     const std::string request_id = normalized.request_id.empty() ? MakeRequestId(user_id) : normalized.request_id;
 
     http::PostToPool(
             rpc::RpcWorkerPool(), rpc::g_rpcQueued, rpc::RpcQueueLimit(), rpc::kRpcQueueBudgetMs, std::move(connection),
             [done_once]() { done_once(LogicResponse(ErrorCodes::TooManyRequests, 1, 0)); },
             [done_once]() { done_once(LogicResponse(ErrorCodes::RPCFailed, 0, 0)); }, {},
-            [user_id, request_id, done_once]() {
+            [user = std::move(user), user_id, request_id, done_once]() {
                 const auto route = StatusGrpcClient::GetInstance()->GetChatServer(user_id, request_id);
                 if (route.error() != ErrorCodes::Success) {
                     done_once(LogicResponse(ErrorCodes::RPCFailed, 0, user_id));
@@ -124,6 +125,10 @@ void LogicService::Logic(const LogicRequest& normalized, std::shared_ptr<HttpCon
                 response.host = route.host();
                 response.port = route.port();
                 response.token = route.token();
+                response.account = user.account;
+                response.email = user.email;
+                response.phone = user.phone;
+                response.username = user.username;
                 done_once(response);
             }
     );

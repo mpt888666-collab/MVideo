@@ -6,6 +6,8 @@
 #define MVIDEOCLIENT_CONST_H
 
 #include <QMetaType>
+#include <QString>
+#include <memory>
 
 enum ErrorCodes {
     Success = 0,
@@ -34,6 +36,7 @@ enum ErrorCodes {
     ChatAlreadyLoggedIn = 1024,  // this session already logged in
 
     ErrorNetWork = 1025,
+    NotFoundFile = 1026,
 };
 
 enum ReqId {
@@ -41,8 +44,11 @@ enum ReqId {
     ID_REG_USER = 1002,        //注册
     ID_RESET_PWD = 1003,       //重置密码
     ID_LOGIN_USER = 1004,      //登录
-    ID_CHAT_LOGIN_QEQ = 1005,  // 用户登录请求
-    ID_CHAT_LOGIN_QSP = 1006,  // 用户登录回包
+
+    ID_CHAT_LOGIN_REQ = 1005,  // 用户登录请求
+    ID_CHAT_LOGIN_RSP = 1006,  // 用户登录回包
+    ID_UPLOAD_VIDEO = 1007,    //上传视频
+    ID_UPLOAD_SERVER_CHECK = 1008, //服务器检查上传是否成功
 };
 
 enum Modules {
@@ -50,9 +56,44 @@ enum Modules {
     RESETMOD = 1,
     LOGINMOD = 2,
     VARITYMOD = 3,
+    HOMEMOD = 4,
+};
+
+enum State {
+    TicketRequested = 1,
+};
+struct ServerInfo {
+    unsigned long long _uid{0};
+    QString _chat_host;
+    QString _chat_port;
+    QString _token;
 };
 
 Q_DECLARE_METATYPE(ReqId)
 Q_DECLARE_METATYPE(Modules)
+Q_DECLARE_METATYPE(std::shared_ptr<ServerInfo>)
+
+struct RetryTask {
+    QString request_key;
+    Modules mod;
+    ReqId reqId;
+    int retry_count{0};
+    int max_retry{3};
+    int delay_ms = 100;
+    qint64 deadlineMs{0};
+    std::function<void()> send_func;
+
+
+};
+
+inline bool isRetryable(int httpStatus, ErrorCodes ec) {
+    if (httpStatus == 429)
+        return true;                                    // 限流，等一会儿再来
+    if (httpStatus >= 500 && httpStatus < 600)
+        return true;                                    // 服务端抖动
+    if (httpStatus == 0 && ec == ErrorNetWork)
+        return true;                                    // 连不上/超时，压根没拿到状态码
+    return false;
+}
 
 #endif //MVIDEOCLIENT_CONST_H

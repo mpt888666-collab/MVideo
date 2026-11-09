@@ -79,7 +79,7 @@ void SendLoginReply(
         response["session_id"] = session->GetSessionId();
         response["active"] = active;
     }
-    session->Send(response.dump(), MSG_ID::ID_CHAT_LOGIN_QSP);
+    session->Send(response.dump(), MSG_ID::ID_CHAT_LOGIN_RSP);
 }
 
 void CompleteLogin(
@@ -145,7 +145,7 @@ void service::LoginService::Handle(const std::shared_ptr<CSession>& session, con
     unsigned long long user_id = 0;
     try {
         token = request.value("token", std::string{});
-        user_id = request.value("user_id", 0ULL);
+        user_id = request.value("uid", 0ULL);
     } catch (const json::exception&) {
         SendLoginReply(session, ErrorCodes::Error_Json);
         return;

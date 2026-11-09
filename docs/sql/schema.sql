@@ -185,3 +185,154 @@ CREATE TABLE IF NOT EXISTS chat_message_read (
         FOREIGN KEY (user_id) REFERENCES user (user_id)
         ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- Video / feed
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS video (
+    id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    author_id       BIGINT UNSIGNED NOT NULL,
+    request_id      VARCHAR(64)     NULL
+                        COMMENT 'client upload idempotency key',
+    title           VARCHAR(200)    NOT NULL,
+    description     TEXT            NULL,
+    category_id     INT UNSIGNED    NOT NULL,
+    cover_key       VARCHAR(512)    NOT NULL,
+    duration_ms     INT UNSIGNED    NOT NULL DEFAULT 0,
+    width           SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    height          SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    status          TINYINT UNSIGNED NOT NULL DEFAULT 0
+                        COMMENT '0=草稿,1=上传中,2=转码中,3=可用,4=处理失败,5=已下架',
+    review_status   TINYINT UNSIGNED NOT NULL DEFAULT 0
+                        COMMENT '0=待审核,1=审核通过,2=审核拒绝,3=人工复审',
+    visibility      TINYINT UNSIGNED NOT NULL DEFAULT 0
+                        COMMENT '0=公开,1=私密,2=仅关注者可见,3=不公开但可通过链接访问',
+    published_at    DATETIME(3)     NULL,
+    created_at      DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at      DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                                      ON UPDATE CURRENT_TIMESTAMP(3),
+    deleted_at      DATETIME(3)     NULL,
+    PRIMARY KEY (id),
+    KEY idx_feed (status, review_status, visibility, published_at, id),
+    KEY idx_category (category_id, status, published_at, id),
+    KEY idx_author (author_id, published_at, id),
+    UNIQUE KEY uniq_author_request (author_id, request_id),
+    CONSTRAINT fk_video_author
+        FOREIGN KEY (author_id) REFERENCES user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS video_stat (
+    video_id        BIGINT UNSIGNED NOT NULL,
+    play_count      BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    like_count      BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    comment_count   BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    share_count     BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    favorite_count  BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    report_count    BIGINT UNSIGNED NOT NULL DEFAULT 0
+                        COMMENT '举报次数，用于推荐降权',
+    completion_rate DECIMAL(5,4)    NOT NULL DEFAULT 0.0000,
+    avg_watch_ms    INT UNSIGNED    NOT NULL DEFAULT 0,
+    updated_at      DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                                      ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (video_id),
+    CONSTRAINT fk_video_stat_video
+        FOREIGN KEY (video_id) REFERENCES video (id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS video_asset (
+    id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    video_id    BIGINT UNSIGNED NOT NULL,
+    asset_type  ENUM('original','hls','cover','preview') NOT NULL,
+    quality     VARCHAR(32)     NOT NULL DEFAULT 'default'
+                    COMMENT 'default=封面/原片, master=HLS主列表, 360p/720p/1080p=清晰度',
+    width       SMALLINT UNSIGNED NULL,
+    height      SMALLINT UNSIGNED NULL,
+    bitrate     INT UNSIGNED    NULL,
+    codec       VARCHAR(32)     NULL,
+    storage_key VARCHAR(512)    NOT NULL,
+    file_size   BIGINT UNSIGNED NULL,
+    created_at  DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    UNIQUE KEY uniq_asset (video_id, asset_type, quality),
+    KEY idx_asset_video (video_id),
+    CONSTRAINT fk_video_asset_video
+        FOREIGN KEY (video_id) REFERENCES video (id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS tag (
+    id   INT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '标签主键，自增',
+    name VARCHAR(64)  NOT NULL                COMMENT '标签名称，全局唯一，直接展示给用户',
+    PRIMARY KEY (id),
+    UNIQUE KEY uniq_tag_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='标签字典：视频分类与检索用的固定词条，只存名称，不含业务统计';
+
+CREATE TABLE IF NOT EXISTS video_tag (
+    video_id BIGINT UNSIGNED NOT NULL,
+    tag_id   INT UNSIGNED    NOT NULL,
+    PRIMARY KEY (video_id, tag_id),
+    KEY idx_tag_video (tag_id, video_id),
+    CONSTRAINT fk_video_tag_video
+        FOREIGN KEY (video_id) REFERENCES video (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_tag_tag
+        FOREIGN KEY (tag_id) REFERENCES tag (id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS editorial_pick (
+    id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    video_id   BIGINT UNSIGNED NOT NULL,
+    channel    VARCHAR(32)     NOT NULL DEFAULT 'curated',
+    slot_type  VARCHAR(32)     NOT NULL DEFAULT 'auto',
+    position   INT             NOT NULL DEFAULT 0
+                   COMMENT '同频道同位置的固定排序，数值越小越靠前',
+    weight     DECIMAL(10,4)   NOT NULL DEFAULT 0.0000,
+    starts_at  DATETIME(3)     NULL,
+    ends_at    DATETIME(3)     NULL,
+    enabled    TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    created_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_pick_active (channel, enabled, starts_at, ends_at),
+    CONSTRAINT fk_editorial_video
+        FOREIGN KEY (video_id) REFERENCES video (id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS video_like (
+    user_id    BIGINT UNSIGNED NOT NULL,
+    video_id   BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (user_id, video_id),
+    KEY idx_video_like_video (video_id, created_at),
+    CONSTRAINT fk_video_like_user
+        FOREIGN KEY (user_id) REFERENCES user (user_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_like_video
+        FOREIGN KEY (video_id) REFERENCES video (id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS video_comment (
+    id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    video_id   BIGINT UNSIGNED NOT NULL,
+    user_id    BIGINT UNSIGNED NOT NULL,
+    content    TEXT            NOT NULL,
+    status     TINYINT UNSIGNED NOT NULL DEFAULT 0
+                   COMMENT '0=正常,1=已隐藏,2=已删除',
+    created_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                                  ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (id),
+    KEY idx_comment_video (video_id, created_at),
+    KEY idx_comment_user (user_id, created_at),
+    CONSTRAINT fk_video_comment_video
+        FOREIGN KEY (video_id) REFERENCES video (id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_video_comment_user
+        FOREIGN KEY (user_id) REFERENCES user (user_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

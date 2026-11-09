@@ -62,6 +62,33 @@ bool Rollback(MYSQL* mysql) {
     return mysql_query(mysql, "ROLLBACK") == 0;
 }
 
+std::optional<unsigned int> GetOrCreateTagId(MYSQL* mysql, const std::string& name) {
+    static const char* kSql =
+            "INSERT INTO tag (name) VALUES (?) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)";
+    auto stmt = Prepare(mysql, kSql);
+    if (!stmt) {
+        return std::nullopt;
+    }
+
+    unsigned long name_length = static_cast<unsigned long>(name.size());
+    MYSQL_BIND param{};
+    BindString(param, name, name_length);
+    if (mysql_stmt_bind_param(stmt.get(), &param) != 0) {
+        LogStmtError("mysql_stmt_bind_param(tag upsert)", stmt.get());
+        return std::nullopt;
+    }
+    if (mysql_stmt_execute(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(tag upsert)", stmt.get());
+        return std::nullopt;
+    }
+
+    const auto tag_id = mysql_stmt_insert_id(stmt.get());
+    if (tag_id == 0) {
+        return std::nullopt;
+    }
+    return static_cast<unsigned int>(tag_id);
+}
+
 enum class LookupResult { NotFound, Found, Error };
 
 LookupResult FindExistingUser(
@@ -352,6 +379,364 @@ MySqlMgr::CreateUserResult MySqlMgr::CreateUser(const NewUser& user, long long& 
     return CreateUserResult::Success;
 }
 
+std::optional<unsigned long long> MySqlMgr::CreateUploadingVideo(const NewVideo& video) {
+    if (video.author_id == 0 || video.request_id.empty() || video.object_key.empty() ||
+        video.title.empty() || video.file_size == 0) {
+        std::cerr << "[MySqlMgr] invalid uploading video data" << std::endl;
+        return std::nullopt;
+    }
+
+    auto mysql_mgr = MySqlMgr::GetInstance();
+    if (!mysql_mgr->IsValid()) {
+        std::cerr << "[MySqlMgr] MySQL is not available" << std::endl;
+        return std::nullopt;
+    }
+
+    MysqlConnGuard guard(mysql_mgr->GetConn());
+    MYSQL* mysql = guard.Raw();
+    if (!mysql) {
+        std::cerr << "[MySqlMgr] no MySQL connection available" << std::endl;
+        return std::nullopt;
+    }
+
+    if (mysql_query(mysql, "START TRANSACTION") != 0) {
+        LogMysqlError("START TRANSACTION", mysql);
+        return std::nullopt;
+    }
+
+    static const char* kInsertVideoSql =
+            "INSERT INTO video "
+            "(author_id, request_id, title, description, category_id, cover_key, status, review_status, visibility) "
+            "VALUES (?, ?, ?, ?, 0, '', 1, 0, 0) "
+            "ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)";
+    auto insert_video = Prepare(mysql, kInsertVideoSql);
+    if (!insert_video) {
+        Rollback(mysql);
+        return std::nullopt;
+    }
+
+    unsigned long long author_id = video.author_id;
+    std::string request_id = video.request_id;
+    std::string title = video.title;
+    std::string description = video.description;
+    unsigned long request_id_length = static_cast<unsigned long>(request_id.size());
+    unsigned long title_length = static_cast<unsigned long>(title.size());
+    unsigned long description_length = static_cast<unsigned long>(description.size());
+    MYSQL_BIND video_params[4]{};
+    video_params[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    video_params[0].buffer = &author_id;
+    video_params[0].is_unsigned = true;
+    BindString(video_params[1], request_id, request_id_length);
+    BindString(video_params[2], title, title_length);
+    BindString(video_params[3], description, description_length);
+
+    if (mysql_stmt_bind_param(insert_video.get(), video_params) != 0) {
+        LogStmtError("mysql_stmt_bind_param(insert uploading video)", insert_video.get());
+        Rollback(mysql);
+        return std::nullopt;
+    }
+    if (mysql_stmt_execute(insert_video.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(insert uploading video)", insert_video.get());
+        Rollback(mysql);
+        return std::nullopt;
+    }
+
+    unsigned long long video_id = mysql_stmt_insert_id(insert_video.get());
+    insert_video.reset();
+    if (video_id == 0) {
+        std::cerr << "[MySqlMgr] mysql_stmt_insert_id(video) returned 0" << std::endl;
+        Rollback(mysql);
+        return std::nullopt;
+    }
+
+    static const char* kInsertAssetSql =
+            "INSERT INTO video_asset (video_id, asset_type, quality, storage_key, file_size) "
+            "VALUES (?, 'original', 'default', ?, ?) "
+            "ON DUPLICATE KEY UPDATE storage_key=storage_key";
+    auto insert_asset = Prepare(mysql, kInsertAssetSql);
+    if (!insert_asset) {
+        Rollback(mysql);
+        return std::nullopt;
+    }
+
+    std::string object_key = video.object_key;
+    unsigned long object_key_length = static_cast<unsigned long>(object_key.size());
+    unsigned long long file_size = video.file_size;
+    MYSQL_BIND asset_params[3]{};
+    asset_params[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    asset_params[0].buffer = &video_id;
+    asset_params[0].is_unsigned = true;
+    BindString(asset_params[1], object_key, object_key_length);
+    asset_params[2].buffer_type = MYSQL_TYPE_LONGLONG;
+    asset_params[2].buffer = &file_size;
+    asset_params[2].is_unsigned = true;
+
+    if (mysql_stmt_bind_param(insert_asset.get(), asset_params) != 0) {
+        LogStmtError("mysql_stmt_bind_param(insert uploading video asset)", insert_asset.get());
+        Rollback(mysql);
+        return std::nullopt;
+    }
+    if (mysql_stmt_execute(insert_asset.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(insert uploading video asset)", insert_asset.get());
+        Rollback(mysql);
+        return std::nullopt;
+    }
+    insert_asset.reset();
+
+    static const char* kInsertStatSql =
+            "INSERT INTO video_stat (video_id) VALUES (?) "
+            "ON DUPLICATE KEY UPDATE video_id=video_id";
+    auto insert_stat = Prepare(mysql, kInsertStatSql);
+    if (!insert_stat) {
+        Rollback(mysql);
+        return std::nullopt;
+    }
+
+    MYSQL_BIND stat_param{};
+    stat_param.buffer_type = MYSQL_TYPE_LONGLONG;
+    stat_param.buffer = &video_id;
+    stat_param.is_unsigned = true;
+    if (mysql_stmt_bind_param(insert_stat.get(), &stat_param) != 0) {
+        LogStmtError("mysql_stmt_bind_param(insert uploading video stat)", insert_stat.get());
+        Rollback(mysql);
+        return std::nullopt;
+    }
+    if (mysql_stmt_execute(insert_stat.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(insert uploading video stat)", insert_stat.get());
+        Rollback(mysql);
+        return std::nullopt;
+    }
+    insert_stat.reset();
+
+    static const char* kInsertVideoTagSql = "INSERT IGNORE INTO video_tag (video_id, tag_id) VALUES (?, ?)";
+    for (const auto& tag : video.tags) {
+        if (tag.empty()) {
+            continue;
+        }
+
+        const auto tag_id = GetOrCreateTagId(mysql, tag);
+        if (!tag_id) {
+            Rollback(mysql);
+            return std::nullopt;
+        }
+
+        auto insert_video_tag = Prepare(mysql, kInsertVideoTagSql);
+        if (!insert_video_tag) {
+            Rollback(mysql);
+            return std::nullopt;
+        }
+
+        unsigned long long video_tag_video_id = video_id;
+        unsigned long long video_tag_tag_id = *tag_id;
+        MYSQL_BIND tag_params[2]{};
+        tag_params[0].buffer_type = MYSQL_TYPE_LONGLONG;
+        tag_params[0].buffer = &video_tag_video_id;
+        tag_params[0].is_unsigned = true;
+        tag_params[1].buffer_type = MYSQL_TYPE_LONGLONG;
+        tag_params[1].buffer = &video_tag_tag_id;
+        tag_params[1].is_unsigned = true;
+
+        if (mysql_stmt_bind_param(insert_video_tag.get(), tag_params) != 0) {
+            LogStmtError("mysql_stmt_bind_param(insert uploading video tag)", insert_video_tag.get());
+            Rollback(mysql);
+            return std::nullopt;
+        }
+        if (mysql_stmt_execute(insert_video_tag.get()) != 0) {
+            LogStmtError("mysql_stmt_execute(insert uploading video tag)", insert_video_tag.get());
+            Rollback(mysql);
+            return std::nullopt;
+        }
+    }
+
+    if (mysql_query(mysql, "COMMIT") != 0) {
+        LogMysqlError("COMMIT", mysql);
+        Rollback(mysql);
+        return std::nullopt;
+    }
+    return video_id;
+}
+
+std::optional<MySqlMgr::UploadingVideo> MySqlMgr::GetUploadingVideo(
+        unsigned long long author_id, const std::string& request_id
+) {
+    if (author_id == 0 || request_id.empty()) {
+        return std::nullopt;
+    }
+
+    auto mysql_mgr = MySqlMgr::GetInstance();
+    if (!mysql_mgr->IsValid()) {
+        return std::nullopt;
+    }
+
+    MysqlConnGuard guard(mysql_mgr->GetConn());
+    MYSQL* mysql = guard.Raw();
+    if (!mysql) {
+        return std::nullopt;
+    }
+
+    static const char* kSql =
+            "SELECT v.id, v.status, a.storage_key, COALESCE(a.file_size, 0) "
+            "FROM video v "
+            "JOIN video_asset a ON a.video_id = v.id "
+            "AND a.asset_type = 'original' AND a.quality = 'default' "
+            "WHERE v.author_id = ? AND v.request_id = ? LIMIT 1";
+    auto stmt = Prepare(mysql, kSql);
+    if (!stmt) {
+        return std::nullopt;
+    }
+
+    std::string request_id_value = request_id;
+    unsigned long request_id_length = static_cast<unsigned long>(request_id_value.size());
+    MYSQL_BIND params[2]{};
+    params[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    params[0].buffer = &author_id;
+    params[0].is_unsigned = true;
+    BindString(params[1], request_id_value, request_id_length);
+    if (mysql_stmt_bind_param(stmt.get(), params) != 0) {
+        LogStmtError("mysql_stmt_bind_param(get uploading video)", stmt.get());
+        return std::nullopt;
+    }
+    if (mysql_stmt_execute(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(get uploading video)", stmt.get());
+        return std::nullopt;
+    }
+
+    unsigned long long video_id = 0;
+    unsigned char status = 0;
+    char object_key[513]{};
+    unsigned long object_key_length = 0;
+    unsigned long long file_size = 0;
+    MYSQL_BIND result[4]{};
+    using MysqlNullFlag = std::remove_pointer_t<decltype(result[0].is_null)>;
+    MysqlNullFlag null_flags[4]{};
+
+    result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result[0].buffer = &video_id;
+    result[0].is_unsigned = true;
+    result[0].is_null = &null_flags[0];
+
+    result[1].buffer_type = MYSQL_TYPE_TINY;
+    result[1].buffer = &status;
+    result[1].is_unsigned = true;
+    result[1].is_null = &null_flags[1];
+
+    result[2].buffer_type = MYSQL_TYPE_STRING;
+    result[2].buffer = object_key;
+    result[2].buffer_length = static_cast<unsigned long>(sizeof(object_key));
+    result[2].length = &object_key_length;
+    result[2].is_null = &null_flags[2];
+
+    result[3].buffer_type = MYSQL_TYPE_LONGLONG;
+    result[3].buffer = &file_size;
+    result[3].is_unsigned = true;
+    result[3].is_null = &null_flags[3];
+
+    if (mysql_stmt_bind_result(stmt.get(), result) != 0) {
+        LogStmtError("mysql_stmt_bind_result(get uploading video)", stmt.get());
+        return std::nullopt;
+    }
+    if (mysql_stmt_store_result(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_store_result(get uploading video)", stmt.get());
+        return std::nullopt;
+    }
+
+    const int fetched = mysql_stmt_fetch(stmt.get());
+    if (fetched == MYSQL_NO_DATA) {
+        return std::nullopt;
+    }
+    if (fetched != 0 || null_flags[0] || null_flags[2] ||
+        object_key_length >= sizeof(object_key)) {
+        return std::nullopt;
+    }
+
+    UploadingVideo video{};
+    video.video_id = video_id;
+    video.status = status;
+    video.object_key.assign(object_key, object_key_length);
+    video.file_size = null_flags[3] ? 0 : file_size;
+    return video;
+}
+
+bool MySqlMgr::MarkVideoTranscoding(
+        unsigned long long video_id, unsigned long long author_id,
+        unsigned long long actual_file_size
+) {
+    if (video_id == 0 || author_id == 0) {
+        return false;
+    }
+
+    auto mysql_mgr = MySqlMgr::GetInstance();
+    if (!mysql_mgr->IsValid()) {
+        return false;
+    }
+
+    MysqlConnGuard guard(mysql_mgr->GetConn());
+    MYSQL* mysql = guard.Raw();
+    if (!mysql || mysql_query(mysql, "START TRANSACTION") != 0) {
+        return false;
+    }
+
+    static const char* kUpdateAssetSql =
+            "UPDATE video_asset SET file_size = ? "
+            "WHERE video_id = ? AND asset_type = 'original' AND quality = 'default'";
+    auto update_asset = Prepare(mysql, kUpdateAssetSql);
+    if (!update_asset) {
+        Rollback(mysql);
+        return false;
+    }
+
+    MYSQL_BIND asset_params[2]{};
+    asset_params[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    asset_params[0].buffer = &actual_file_size;
+    asset_params[0].is_unsigned = true;
+    asset_params[1].buffer_type = MYSQL_TYPE_LONGLONG;
+    asset_params[1].buffer = &video_id;
+    asset_params[1].is_unsigned = true;
+    if (mysql_stmt_bind_param(update_asset.get(), asset_params) != 0 ||
+        mysql_stmt_execute(update_asset.get()) != 0) {
+        LogStmtError("update uploaded video asset", update_asset.get());
+        Rollback(mysql);
+        return false;
+    }
+    update_asset.reset();
+
+    static const char* kUpdateVideoSql =
+            "UPDATE video SET status = 2 WHERE id = ? AND author_id = ? AND status = 1";
+    auto update_video = Prepare(mysql, kUpdateVideoSql);
+    if (!update_video) {
+        Rollback(mysql);
+        return false;
+    }
+
+    unsigned long long bound_video_id = video_id;
+    unsigned long long bound_author_id = author_id;
+    MYSQL_BIND video_params[2]{};
+    video_params[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    video_params[0].buffer = &bound_video_id;
+    video_params[0].is_unsigned = true;
+    video_params[1].buffer_type = MYSQL_TYPE_LONGLONG;
+    video_params[1].buffer = &bound_author_id;
+    video_params[1].is_unsigned = true;
+    if (mysql_stmt_bind_param(update_video.get(), video_params) != 0 ||
+        mysql_stmt_execute(update_video.get()) != 0) {
+        LogStmtError("mark video transcoding", update_video.get());
+        Rollback(mysql);
+        return false;
+    }
+    if (mysql_stmt_affected_rows(update_video.get()) != 1) {
+        Rollback(mysql);
+        return false;
+    }
+    update_video.reset();
+
+    if (mysql_query(mysql, "COMMIT") != 0) {
+        LogMysqlError("COMMIT", mysql);
+        Rollback(mysql);
+        return false;
+    }
+    return true;
+}
+
 int MySqlMgr::ResetPwd(const std::string& email, const std::string& password_hash) {
     auto mysql_mgr = MySqlMgr::GetInstance();
     if (!mysql_mgr->IsValid()) {
@@ -397,8 +782,8 @@ int MySqlMgr::ResetPwd(const std::string& email, const std::string& password_has
     return affected == 0 ? 1 : 0;
 }
 
-int MySqlMgr::UserLogin(const std::string& email, const std::string& password, unsigned long long& user_id) {
-    user_id = 0;
+int MySqlMgr::UserLogin(const std::string& email, const std::string& password, UserProfile& user) {
+    user = UserProfile{};
 
     auto mysql_mgr = MySqlMgr::GetInstance();
     if (!mysql_mgr->IsValid()) {
@@ -408,6 +793,10 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, u
 
     std::string stored_password_hash;
     unsigned long long db_user_id = 0;
+    std::string account;
+    std::string stored_email;
+    std::string phone;
+    std::string username;
     bool user_not_found = false;
     {
         MysqlConnGuard guard(mysql_mgr->GetConn());
@@ -417,7 +806,10 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, u
             return -1;
         }
 
-        static const char* kSql = "SELECT user_id, password_hash FROM user WHERE email=? LIMIT 1";
+        static const char* kSql =
+                "SELECT u.user_id, u.account, u.email, COALESCE(u.phone, ''), u.password_hash, "
+                "COALESCE(i.username, '') FROM user u "
+                "LEFT JOIN user_info i ON i.user_id = u.user_id WHERE u.email=? LIMIT 1";
         auto stmt = Prepare(mysql, kSql);
         if (!stmt) {
             return -1;
@@ -436,23 +828,54 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, u
             return -1;
         }
 
+        char account_buffer[65]{};
+        char email_buffer[256]{};
+        char phone_buffer[33]{};
         char hash_buffer[256]{};
+        char username_buffer[257]{};
+        unsigned long account_length = 0;
+        unsigned long email_length_value = 0;
+        unsigned long phone_length = 0;
         unsigned long hash_length = 0;
-        MYSQL_BIND result[2]{};
+        unsigned long username_length = 0;
+        MYSQL_BIND result[6]{};
         using MysqlNullFlag = std::remove_pointer_t<decltype(result[0].is_null)>;
-        MysqlNullFlag user_id_null = 0;
-        MysqlNullFlag hash_null = 0;
+        MysqlNullFlag null_flags[6]{};
 
         result[0].buffer_type = MYSQL_TYPE_LONGLONG;
         result[0].buffer = &db_user_id;
-        result[0].is_null = &user_id_null;
+        result[0].is_null = &null_flags[0];
         result[0].is_unsigned = true;
 
         result[1].buffer_type = MYSQL_TYPE_STRING;
-        result[1].buffer = hash_buffer;
-        result[1].buffer_length = static_cast<unsigned long>(sizeof(hash_buffer));
-        result[1].length = &hash_length;
-        result[1].is_null = &hash_null;
+        result[1].buffer = account_buffer;
+        result[1].buffer_length = static_cast<unsigned long>(sizeof(account_buffer));
+        result[1].length = &account_length;
+        result[1].is_null = &null_flags[1];
+
+        result[2].buffer_type = MYSQL_TYPE_STRING;
+        result[2].buffer = email_buffer;
+        result[2].buffer_length = static_cast<unsigned long>(sizeof(email_buffer));
+        result[2].length = &email_length_value;
+        result[2].is_null = &null_flags[2];
+
+        result[3].buffer_type = MYSQL_TYPE_STRING;
+        result[3].buffer = phone_buffer;
+        result[3].buffer_length = static_cast<unsigned long>(sizeof(phone_buffer));
+        result[3].length = &phone_length;
+        result[3].is_null = &null_flags[3];
+
+        result[4].buffer_type = MYSQL_TYPE_STRING;
+        result[4].buffer = hash_buffer;
+        result[4].buffer_length = static_cast<unsigned long>(sizeof(hash_buffer));
+        result[4].length = &hash_length;
+        result[4].is_null = &null_flags[4];
+
+        result[5].buffer_type = MYSQL_TYPE_STRING;
+        result[5].buffer = username_buffer;
+        result[5].buffer_length = static_cast<unsigned long>(sizeof(username_buffer));
+        result[5].length = &username_length;
+        result[5].is_null = &null_flags[5];
 
         if (mysql_stmt_bind_result(stmt.get(), result) != 0) {
             LogStmtError("mysql_stmt_bind_result(user login)", stmt.get());
@@ -469,10 +892,17 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, u
         } else if (fetch_result != 0) {
             LogStmtError("mysql_stmt_fetch(user login)", stmt.get());
             return -1;
-        } else if (user_id_null || hash_null || hash_length == 0 || hash_length >= sizeof(hash_buffer)) {
+        } else if (null_flags[0] || null_flags[4] || hash_length == 0 ||
+                   hash_length >= sizeof(hash_buffer)) {
             return -1;
         } else {
             stored_password_hash.assign(hash_buffer, hash_length);
+            account.assign(account_buffer, account_length);
+            stored_email.assign(email_buffer, email_length_value);
+            if (!null_flags[3])
+                phone.assign(phone_buffer, phone_length);
+            if (!null_flags[5])
+                username.assign(username_buffer, username_length);
         }
     }
 
@@ -489,6 +919,10 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, u
         return -1;
     }
 
-    user_id = db_user_id;
+    user.user_id = db_user_id;
+    user.account = std::move(account);
+    user.email = std::move(stored_email);
+    user.phone = std::move(phone);
+    user.username = std::move(username);
     return 0;
 }

@@ -41,6 +41,10 @@ public:
 
     void SendOverloadResponse();
 
+    void SendJsonResponse(
+            boost::beast::http::status status, const std::string& body, int retry_after = 0
+    );
+
     void DeferResponse();
 
     bool IsOpen() const {

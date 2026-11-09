@@ -183,7 +183,7 @@ void LogicWork::HandleMessage(const std::shared_ptr<LogicNode>& logic_node) {
 }
 
 void LogicWork::initHandle() {
-    _handlers[MSG_ID::ID_CHAT_LOGIN_QEQ] =
+    _handlers[MSG_ID::ID_CHAT_LOGIN_REQ] =
             [](std::shared_ptr<CSession> session, std::uint16_t, const std::string& msg_data) {
                 service::LoginService::Handle(session, msg_data);
             };

@@ -80,7 +80,9 @@ if(EXISTS "${PROTO_FILE}")
         VERBATIM
     )
 
-    set(GENERATED_SRCS ${PB_CC} ${GRPC_CC})
+    set(GENERATED_SRCS ${PB_CC} ${GRPC_CC}
+            service/UpLoadVideoServer.cpp
+            service/UpLoadVideoServer.h)
 endif()
 
 add_executable(GetServer
@@ -124,6 +126,9 @@ add_executable(GetServer
 
     security/PasswordUtil.cpp
     security/PasswordUtil.h
+
+    storage/MinioClient.cpp
+    storage/MinioClient.h
 
     service/LogicService.cpp
     service/LogicService.h

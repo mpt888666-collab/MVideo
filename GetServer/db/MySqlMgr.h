@@ -16,9 +16,11 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
+#include <vector>
 
 struct MysqlConnDeleter {
     void operator()(MYSQL* conn) const {
@@ -88,15 +90,51 @@ public:
         std::string password_hash;
     };
 
+    struct UserProfile {
+        unsigned long long user_id{0};
+        std::string account;
+        std::string email;
+        std::string phone;
+        std::string username;
+    };
+
+    struct NewVideo {
+        unsigned long long author_id{0};
+        std::string request_id;
+        std::string title;
+        std::string description;
+        std::string object_key;
+        unsigned long long file_size{0};
+        std::vector<std::string> tags;
+    };
+
+    struct UploadingVideo {
+        unsigned long long video_id{0};
+        unsigned char status{0};
+        std::string object_key;
+        unsigned long long file_size{0};
+    };
+
     enum class CreateUserResult { Success, Duplicate, Error };
 
     CreateUserResult CreateUser(const NewUser& user, long long& user_id);
+
+    std::optional<unsigned long long> CreateUploadingVideo(const NewVideo& video);
+
+    std::optional<UploadingVideo> GetUploadingVideo(
+            unsigned long long author_id, const std::string& request_id
+    );
+
+    bool MarkVideoTranscoding(
+            unsigned long long video_id, unsigned long long author_id,
+            unsigned long long actual_file_size
+    );
 
     // -1: database error, 0: updated, 1: user not found
     int ResetPwd(const std::string& email, const std::string& password_hash);
 
     // -1: database error, 0: success, 1: user not found, 2: wrong password
-    int UserLogin(const std::string& email, const std::string& password, unsigned long long& user_id);
+    int UserLogin(const std::string& email, const std::string& password, UserProfile& user);
 
     MysqlConnUPtr GetConn() const {
         if (!_pool)

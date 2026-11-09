@@ -182,6 +182,16 @@ void HttpConnection::SendOverloadResponse() {
     WriteResponse();
 }
 
+void HttpConnection::SendJsonResponse(boost::beast::http::status status, const std::string& body, int retry_after) {
+    _response.result(status);
+    _response.set(boost::beast::http::field::content_type, "text/json");
+    if (retry_after > 0) {
+        _response.set(boost::beast::http::field::retry_after, std::to_string(retry_after));
+    }
+    boost::beast::ostream(_response.body()) << body;
+    WriteResponse();
+}
+
 boost::asio::ip::tcp::socket& HttpConnection::GetSocket() {
     return _socket;
 }

@@ -43,8 +43,8 @@ enum ErrorCodes {
 
 enum MSG_ID {
 
-    ID_CHAT_LOGIN_QEQ = 1005,  // 用户登录请求
-    ID_CHAT_LOGIN_QSP = 1006,  // 用户登录回包
+    ID_CHAT_LOGIN_REQ = 1005,  // 用户登录请求
+    ID_CHAT_LOGIN_RSP = 1006,  // 用户登录回包
 };
 
 #define HEAD_TOTAL_LEN 4

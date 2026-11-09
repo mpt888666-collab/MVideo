@@ -10,6 +10,8 @@
 #include <QJsonValue>
 #include <QNetworkReply>
 
+#include "UploadWork.h"
+
 namespace {
 
 qint64 toInteger(const QJsonValue& value)
@@ -42,21 +44,29 @@ AuthWork::AuthWork(QObject* parent) : QObject(parent) {}
 void AuthWork::parseReply(ReqId id, Modules mod, int httpStatus, int networkError, const QString& body){
     Q_UNUSED(id)
 
-    const auto finishWithError = [this, mod](int error, const QString& message) {
+    const auto finishWithError = [this, mod, id](int error, const QString& message) {
         switch (mod) {
-        case VARITYMOD:
-            emit sigVerifyCodeParsed(error, message);
-            break;
-        case REGISTERMOD:
-            emit sigRegisterParsed(error, message, 0);
-            break;
-        case RESETMOD:
-            emit sigResetParsed(error, message);
-            break;
-        case LOGINMOD:
-            emit sigLoginParsed(error, message, QString(), QString(), 0, 0);
-            break;
+            case VARITYMOD:
+                emit sigVerifyCodeParsed(error, message);
+                break;
+            case REGISTERMOD:
+                emit sigRegisterParsed(error, message, 0);
+                break;
+            case RESETMOD:
+                emit sigResetParsed(error, message);
+                break;
+            case LOGINMOD:
+                emit sigLoginParsed(error, message, LoginResult{});
+                break;
+            case HOMEMOD:
+                if (id == ID_UPLOAD_VIDEO) {
+                    emit sigHomeUpLoadParsed(error, message, ResponseVideoData{});
+                }else if (id == ID_UPLOAD_SERVER_CHECK) {
+                    emit sigServerCheckComplete(false);
+                }
+                break;
         }
+
     };
 
     QJsonObject object;
@@ -116,35 +126,42 @@ void AuthWork::parseReply(ReqId id, Modules mod, int httpStatus, int networkErro
     }
 
     switch (mod) {
-    case VARITYMOD:
-        emit sigVerifyCodeParsed(Success,
-            object.value(QStringLiteral("msg")).toString().isEmpty() ? QStringLiteral("验证码已发送") : message);
-        break;
-    case REGISTERMOD:
-        emit sigRegisterParsed(
-            Success,
-            object.value(QStringLiteral("msg")).toString().isEmpty()
-                ? QStringLiteral("注册成功，请登录")
-                : message,
-            toInteger(object.value(QStringLiteral("user_id"))));
-        break;
-    case RESETMOD:
-        emit sigResetParsed(Success,
-                            object.value(QStringLiteral("msg")).toString().isEmpty()
-                                ? QStringLiteral("密码重置成功")
-                                : message);
-        break;
-    case LOGINMOD:
-        emit sigLoginParsed(
-            Success,
-            object.value(QStringLiteral("msg")).toString().isEmpty()
-                ? QStringLiteral("登录成功")
-                : message,
-            object.value(QStringLiteral("token")).toString(),
-            object.value(QStringLiteral("host")).toString(),
-            toPort(object.value(QStringLiteral("port"))),
-            toInteger(object.value(QStringLiteral("user_id"))));
-        break;
+        case VARITYMOD:
+            emit sigVerifyCodeParsed(Success,
+                object.value(QStringLiteral("msg")).toString().isEmpty() ? QStringLiteral("验证码已发送") : message);
+            break;
+        case REGISTERMOD:
+            emit sigRegisterParsed(
+                Success,
+                object.value(QStringLiteral("msg")).toString().isEmpty()
+                    ? QStringLiteral("注册成功，请登录")
+                    : message,
+                toInteger(object.value(QStringLiteral("user_id"))));
+            break;
+        case RESETMOD:
+            emit sigResetParsed(Success,
+                                object.value(QStringLiteral("msg")).toString().isEmpty()
+                                    ? QStringLiteral("密码重置成功")
+                                    : message);
+            break;
+        case LOGINMOD:
+            emit sigLoginParsed(
+                Success,
+                object.value(QStringLiteral("msg")).toString().isEmpty()
+                    ? QStringLiteral("正在连接服务器,请稍后...")
+                    : message,
+                LoginResult{
+                toInteger(object.value(QStringLiteral("user_id"))),
+                object.value(QStringLiteral("account")).toString(),
+                object.value(QStringLiteral("username")).toString(),
+                object.value(QStringLiteral("email")).toString(),
+                object.value(QStringLiteral("phone")).toString(),
+                object.value(QStringLiteral("token")).toString(),
+                object.value(QStringLiteral("host")).toString(),
+                toPort(object.value(QStringLiteral("port")))});
+            break;
+        case HOMEMOD:
+            handleHomeMon(id, object);
     }
 }
 
@@ -201,5 +218,20 @@ QString AuthWork::defaultMessage(int error)
         return QStringLiteral("网络连接失败");
     default:
         return QStringLiteral("操作失败（错误码 %1）").arg(error);
+    }
+}
+
+void AuthWork::handleHomeMon(const ReqId id, const QJsonObject& object) {
+    if (id == ID_UPLOAD_VIDEO) {
+        ResponseVideoData response{};
+        response.videoId = object.value(QStringLiteral("video_id")).toVariant().toULongLong();
+        response.objectKey = object.value(QStringLiteral("object_key")).toString();
+        response.uploadUrl = object.value(QStringLiteral("upload_url")).toString();
+        response.expiresIn = object.value(QStringLiteral("expires_in")).toInt();
+        response.message = object.value(QStringLiteral("message")).toString();
+        response.requestId = object.value(QStringLiteral("request_id")).toString();
+        emit sigHomeUpLoadParsed(Success, "上传成功，等待传输完成...", response);
+    }else if (id == ID_UPLOAD_SERVER_CHECK) {
+        emit sigServerCheckComplete(true);
     }
 }

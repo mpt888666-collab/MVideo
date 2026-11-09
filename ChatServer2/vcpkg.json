@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "mvideo-chatserver",
+  "version-string": "0.1.0",
+  "description": "MVideo IM chat server dependencies",
+  "builtin-baseline": "bf19794383e8fb95eba5aa553235bc8ec2271688",
+  "dependencies": [
+    "boost-system",
+    "boost-thread",
+    "boost-filesystem",
+    "boost-asio",
+    "boost-beast",
+    "boost-optional",
+    "boost-property-tree",
+    "boost-uuid",
+    "nlohmann-json",
+    "grpc",
+    "protobuf",
+    "redis-plus-plus",
+    {
+      "name": "libmysql",
+      "platform": "windows"
+    },
+    {
+      "name": "libmariadb",
+      "platform": "!windows"
+    }
+  ]
+}

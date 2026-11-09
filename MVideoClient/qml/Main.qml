@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 
 ApplicationWindow {
     id: root
@@ -11,11 +12,148 @@ ApplicationWindow {
     visible: true
     title: "MVideo"
     color: "#080B10"
+    flags: Qt.Window | Qt.FramelessWindowHint
+
+    readonly property string avatarInitial: {
+        const name = UserInfo.displayName
+        return name.length > 0 ? name.charAt(0).toUpperCase() : "?"
+    }
+
+    component TitleButton: Rectangle {
+        id: titleButton
+
+        property string glyph: ""
+        property color hoverColor: "#232734"
+        property color glyphColor: "#D6DCE6"
+
+        signal clicked()
+
+        width: 44
+        height: 32
+        radius: 4
+        color: buttonHover.containsMouse ? hoverColor : "transparent"
+
+        Text {
+            anchors.centerIn: parent
+            text: titleButton.glyph
+            color: titleButton.glyphColor
+            font.pixelSize: 14
+        }
+
+        MouseArea {
+            id: buttonHover
+
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: titleButton.clicked()
+        }
+    }
+
+    Rectangle {
+        id: titleBar
+
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: 48
+        color: "#161823"
+
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            onPressed: root.startSystemMove()
+        }
+
+        Row {
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.rightMargin: 10
+            spacing: 16
+
+            Row {
+                spacing: 16
+                visible: stack.currentItem ? stack.currentItem.isHome === true : false
+
+                Text {
+                    id: uploadEntry
+
+                    height: 32
+                    text: "投稿"
+                    color: uploadHover.containsMouse ? "#FFFFFF" : "#A9B4C2"
+                    font.pixelSize: 14
+                    verticalAlignment: Text.AlignVCenter
+
+                    Behavior on color {
+                        ColorAnimation { duration: 120 }
+                    }
+
+                    MouseArea {
+                        id: uploadHover
+
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: uploadDialog.openDialog()
+                    }
+                }
+
+                Rectangle {
+                    id: avatar
+
+                    width: 32
+                    height: 32
+                    radius: width / 2
+                    color: "#1B1F27"
+                    border.width: 1
+                    border.color: "#2E3642"
+                    clip: true
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: root.avatarInitial
+                        color: "#E6EDF5"
+                        font.pixelSize: 13
+                        font.bold: true
+                    }
+                }
+            }
+
+            Row {
+                spacing: 2
+
+                TitleButton {
+                    glyph: "—"
+                    onClicked: root.showMinimized()
+                }
+
+                TitleButton {
+                    glyph: "□"
+                    onClicked: {
+                        if (root.visibility === Window.Maximized)
+                            root.showNormal()
+                        else
+                            root.showMaximized()
+                    }
+                }
+
+                TitleButton {
+                    glyph: "×"
+                    hoverColor: "#C42B1C"
+                    glyphColor: "#FFFFFF"
+                    onClicked: root.close()
+                }
+            }
+        }
+    }
 
     StackView {
         id: stack
 
-        anchors.fill: parent
+        anchors.top: titleBar.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
         initialItem: loginPage
 
         pushEnter: Transition {
@@ -43,9 +181,94 @@ ApplicationWindow {
         }
     }
 
+    UploadDialog {
+        id: uploadDialog
+
+        onPublishRequested: function(fileUrl, title, description, tags) {
+            console.log("Publish requested:", fileUrl, "|", title, "|", description, "|", tags)
+            AuthServer.uploadVideo(fileUrl, title, description, tags)
+        }
+    }
+
+    MouseArea {
+        width: 6
+        height: parent.height
+        anchors.left: parent.left
+        cursorShape: Qt.SizeHorCursor
+        onPressed: root.startSystemResize(Qt.LeftEdge)
+    }
+
+    MouseArea {
+        width: parent.width
+        height: 6
+        anchors.top: parent.top
+        cursorShape: Qt.SizeVerCursor
+        onPressed: root.startSystemResize(Qt.TopEdge)
+    }
+
+    MouseArea {
+        width: 6
+        height: parent.height
+        anchors.right: parent.right
+        cursorShape: Qt.SizeHorCursor
+        onPressed: root.startSystemResize(Qt.RightEdge)
+    }
+
+    MouseArea {
+        width: parent.width
+        height: 6
+        anchors.bottom: parent.bottom
+        cursorShape: Qt.SizeVerCursor
+        onPressed: root.startSystemResize(Qt.BottomEdge)
+    }
+
     Component.onCompleted: {
         console.log("AuthServer =", AuthServer)
+        console.log("TcpAuth =", TcpAuth)
     }
+
+    Connections {
+        target: AuthServer
+
+        function onLoginFinished(error, message) {
+            if (error === 0) {
+                console.log("TCP: connecting to", UserInfo.chatHost + ":" + UserInfo.chatPort)
+                TcpAuth.loginChatServer()
+            }
+        }
+        function onUploadFailed(error, message) {
+            if (error === 0) {
+                console.log("qml : 文件传输minio失败, " , message)
+            }
+        }
+
+        function onUploadSuccess(error, message) {
+            console.log("qml : 文件传输minio完成, 等待服务器校验完毕", message)
+        }
+
+        function onServerCheckComplete(state){
+            if(state) console.log("qml : 服务器认证完成, 解码中")
+            else console.log("qml : 服务器认证失败")
+        }
+
+    }
+
+    Connections {
+        target: TcpAuth
+
+        function onLoginSucceeded() {
+            console.log("TCP: chat login succeeded")
+            stack.replace(homePage)
+        }
+
+        function onLoginFailed(message) {
+            console.log("TCP: chat server connect failed -", message)
+            if (stack.currentItem && typeof stack.currentItem.showFeedback === "function")
+                stack.currentItem.showFeedback(message, false)
+            AuthServer.logout()
+        }
+    }
+
 
     Component {
         id: loginPage
@@ -56,9 +279,8 @@ ApplicationWindow {
             onPreviewRequested: stack.replace(homePage)
             onLoginRequested: function(email, password) {
                 console.log("Login requested:", email)
-                AuthServer.requestLogin(email, password, "")
+                AuthServer.requestLogin(email, password)
             }
-            onLoginSucceeded: stack.replace(homePage)
         }
     }
 
@@ -99,7 +321,12 @@ ApplicationWindow {
         id: homePage
 
         HomePage {
-            onLogoutRequested: stack.replace(loginPage)
+            readonly property bool isHome: true
+
+            onLogoutRequested: {
+                AuthServer.logout()
+                stack.replace(loginPage)
+            }
         }
     }
 

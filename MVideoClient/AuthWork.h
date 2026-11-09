@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QString>
 #include "const.h"
+#include "AuthTypes.h"
 
 class AuthWork : public QObject {
     Q_OBJECT
@@ -23,11 +24,14 @@ signals:
     void sigVerifyCodeParsed(int error, const QString& message);
     void sigRegisterParsed(int error, const QString& message, qint64 userId);
     void sigResetParsed(int error, const QString& message);
-    void sigLoginParsed(int error, const QString& message, const QString& token,
-                        const QString& host, int port, qint64 userId);
+    void sigLoginParsed(int error, const QString& message, const LoginResult& result);
+    void sigHomeUpLoadParsed(int error, const QString& message, ResponseVideoData);
+    void sigServerCheckComplete(bool);
 
 private:
     static QString defaultMessage(int error);
+
+    void handleHomeMon(ReqId id, const QJsonObject& object);
 };
 
 

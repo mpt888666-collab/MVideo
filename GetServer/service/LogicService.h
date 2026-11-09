@@ -24,6 +24,10 @@ struct LogicResponse {
     std::string host{};
     std::string port{};
     std::string token{};
+    std::string account{};
+    std::string email{};
+    std::string phone{};
+    std::string username{};
 };
 
 class LogicService {
