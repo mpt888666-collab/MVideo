@@ -41,7 +41,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for manifest in GetServer/vcpkg.json ChatServer1/vcpkg.json StatusServer/vcpkg.json; do
+          for manifest in GetServer/vcpkg.json ChatServer1/vcpkg.json StatusServer/vcpkg.json \
+                          VideoTranscoder/vcpkg.json ChatServer2/vcpkg.json; do
             test -s "$manifest"
             python3 -m json.tool "$manifest" > /dev/null
           done
@@ -98,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
           actual="$(docker exec -i "$MYSQL_CONTAINER" mysql -uroot -proot -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='MVideo' ORDER BY table_name")"
-          expected="chat_message chat_message_read chat_thread group_chat group_chat_member private_chat user user_follow user_info"
+          expected="chat_message chat_message_read chat_thread group_chat group_chat_member private_chat user user_follow user_info video video_asset video_tag video_stat video_comment video_like editorial_pick tag"
           for table in $expected; do
             if ! grep -qx "$table" <<< "$actual"; then
               echo "Missing table: $table"
@@ -124,7 +125,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: [GetServer, ChatServer1, StatusServer]
+        project: [GetServer, ChatServer1, StatusServer, VideoTranscoder, ChatServer2]
         platform:
           - name: linux-gcc
             os: ubuntu-latest
