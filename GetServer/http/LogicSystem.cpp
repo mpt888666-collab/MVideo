@@ -30,6 +30,8 @@
 #include <memory>
 #include <string>
 #include <utility>
+
+#include "service/CheckStatusServer.h"
 #include "service/UpLoadVideoServer.h"
 using http::PostToPool;
 
@@ -711,5 +713,117 @@ void LogicSystem::initPostHandlers() {
                         send(result.ec, service::HttpStatusForError(result.ec), 0, data);
                     });
             });
+    });
+
+    RegPost("/video_status", [](std::shared_ptr<HttpConnection> connection) {
+        auto state = std::make_shared<ReplyState>();
+
+        auto send = [connection, state](int error, boost::beast::http::status status, const service::ResponseData& datas) {
+            if (state->replied || !connection->IsOpen()) {
+                return;
+            }
+            state->replied = true;
+            json send_json;
+            send_json["error"] = error;
+            if (!datas.success) {
+                connection->_response.result(status);
+                connection->_response.set(boost::beast::http::field::content_type, "application/json");
+                boost::beast::ostream(connection->_response.body()) << send_json.dump();
+                connection->WriteResponse();
+                return;
+            }
+            send_json["user_id"] = datas.userId;
+            for (const auto& data : datas.videos) {
+                json array;
+                array["video_id"] = data.videoId;
+                array["status"] = data.status;
+                send_json["videos"].push_back(array);
+            }
+
+            connection->_response.result(status);
+            connection->_response.set(boost::beast::http::field::content_type, "application/json");
+            boost::beast::ostream(connection->_response.body()) << send_json.dump();
+            connection->WriteResponse();
+        };
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        connection->DeferResponse();
+        auto ip = ClientIp(connection);
+        if (ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, {});
+            return;
+        }
+
+        PostToPool(admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs, connection,
+        [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, {}); },
+        [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {}); }, {},
+        [connection, send, body, ip]() {
+            json req_json;
+            try {
+                req_json = json::parse(body);
+            }catch (const std::exception&) {
+                send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                return;
+            }
+            if (!req_json.is_object()) {
+                send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                return;
+            }
+            try {
+                auto user_id = req_json["user_id"].get<unsigned long long>();
+                auto token = req_json["token"].get<std::string>();
+                service::RequestData data{user_id, token, ip};
+                std::vector<unsigned long long> videos{};
+                const auto ids_it = req_json.find("video_ids");
+                if (ids_it == req_json.end() || !ids_it->is_array()) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                    return;
+                }
+                for (const auto& item : *ids_it) {
+                    if (!item.is_number_integer() || item.get<long long>() <= 0) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                        return;
+                    }
+                    videos.push_back(item.get<unsigned long long>());
+                }
+                if (videos.empty() || videos.size() > kCheckVideoStatusMaxIds) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                    return;
+                }
+
+                if (user_id <= 0 || token.empty()) {
+                    send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                    return;
+                }
+                auto result = service::CheckStatusServer::Admit(data);
+                if (result != ErrorCodes::Success) {
+                    send(result, service::HttpStatusForError(result), {});
+                    return;
+                }
+
+                PostToPool(mysql::MysqlPool(), mysql::mysqlQueued, mysql::MysqlPoolQueueLimit(), mysql::kMysqlQueueBudgetMs, connection,
+                    [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, {}); },
+                    [send]() { send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error, {}); },{},
+                    [user_id, videos, send]() {
+                        const auto statuses = MySqlMgr::GetInstance()->GetVideoStatuses(user_id, videos);
+                        if (!statuses) {
+                            send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error, {});
+                            return;
+                        }
+                        service::ResponseData response{};
+                        response.userId = user_id;
+                        response.success = true;
+                        response.videos.reserve(statuses->size());
+                        for (const auto& item : *statuses) {
+                            response.videos.push_back({item.video_id, item.status});
+                        }
+                        send(ErrorCodes::Success, boost::beast::http::status::ok, response);
+                    });
+
+            }catch (const std::exception&) {
+                send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                return;
+            }
+        });
+
     });
 }

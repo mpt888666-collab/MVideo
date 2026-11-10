@@ -926,3 +926,101 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, U
     user.username = std::move(username);
     return 0;
 }
+std::optional<std::vector<MySqlMgr::VideoStatus>> MySqlMgr::GetVideoStatuses(
+        unsigned long long author_id, const std::vector<unsigned long long>& video_ids
+) {
+    if (author_id == 0) {
+        return std::nullopt;
+    }
+    if (video_ids.empty()) {
+        return std::vector<VideoStatus>{};
+    }
+
+    auto mysql_mgr = MySqlMgr::GetInstance();
+    if (!mysql_mgr->IsValid()) {
+        return std::nullopt;
+    }
+
+    MysqlConnGuard guard(mysql_mgr->GetConn());
+    MYSQL* mysql = guard.Raw();
+    if (!mysql) {
+        return std::nullopt;
+    }
+
+    std::string sql =
+            "SELECT id, status FROM video "
+            "WHERE author_id = ? AND deleted_at IS NULL AND id IN (";
+    for (std::size_t i = 0; i < video_ids.size(); ++i) {
+        if (i > 0) {
+            sql.push_back(',');
+        }
+        sql.push_back('?');
+    }
+    sql.push_back(')');
+
+    auto stmt = Prepare(mysql, sql.c_str());
+    if (!stmt) {
+        return std::nullopt;
+    }
+
+    std::vector<unsigned long long> ids = video_ids;
+    std::vector<MYSQL_BIND> params(ids.size() + 1);
+    params[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    params[0].buffer = &author_id;
+    params[0].is_unsigned = true;
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        params[i + 1].buffer_type = MYSQL_TYPE_LONGLONG;
+        params[i + 1].buffer = &ids[i];
+        params[i + 1].is_unsigned = true;
+    }
+    if (mysql_stmt_bind_param(stmt.get(), params.data()) != 0) {
+        LogStmtError("mysql_stmt_bind_param(get video statuses)", stmt.get());
+        return std::nullopt;
+    }
+    if (mysql_stmt_execute(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(get video statuses)", stmt.get());
+        return std::nullopt;
+    }
+
+    unsigned long long video_id = 0;
+    unsigned char status = 0;
+    MYSQL_BIND result[2]{};
+    using MysqlNullFlag = std::remove_pointer_t<decltype(result[0].is_null)>;
+    MysqlNullFlag null_flags[2]{};
+
+    result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result[0].buffer = &video_id;
+    result[0].is_unsigned = true;
+    result[0].is_null = &null_flags[0];
+
+    result[1].buffer_type = MYSQL_TYPE_TINY;
+    result[1].buffer = &status;
+    result[1].is_unsigned = true;
+    result[1].is_null = &null_flags[1];
+
+    if (mysql_stmt_bind_result(stmt.get(), result) != 0) {
+        LogStmtError("mysql_stmt_bind_result(get video statuses)", stmt.get());
+        return std::nullopt;
+    }
+    if (mysql_stmt_store_result(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_store_result(get video statuses)", stmt.get());
+        return std::nullopt;
+    }
+
+    std::vector<VideoStatus> videos;
+    while (true) {
+        const int fetched = mysql_stmt_fetch(stmt.get());
+        if (fetched == MYSQL_NO_DATA) {
+            break;
+        }
+        if (fetched != 0) {
+            LogStmtError("mysql_stmt_fetch(get video statuses)", stmt.get());
+            return std::nullopt;
+        }
+        if (null_flags[0]) {
+            continue;
+        }
+        videos.push_back(VideoStatus{video_id, static_cast<int>(status)});
+    }
+    return videos;
+}

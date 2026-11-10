@@ -7,6 +7,7 @@
 #include "const.h"
 #include <QDebug>
 #include <iostream>
+#include <QJsonDocument>
 #include <QJsonObject>
 TcpAuth::TcpAuth() {
     _si = std::make_shared<ServerInfo>();

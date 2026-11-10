@@ -43,6 +43,7 @@ enum ErrorCodes {
     VideoNotFound = 1020,
     UploadObjectMismatch = 1021,
     UploadIncomplete = 1022,
+    Error_Token = 1023,          // token invalid / expired / not logged in
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,11 @@ constexpr int kUploadVideoMaxDescLen = 200;     // 描述最长 200 字
 constexpr std::size_t kUploadVideoMaxTags = 5;  // 最多 5 个标签
 constexpr double kUploadVideoMaxBytes = 2.0 * 1024 * 1024 * 1024;  // 单文件上限 2GB
 constexpr int kUploadTicketTtlSec = 24 * 3600;  // 上传会话保留 24 小时
+
+//查询status接口限流
+constexpr int kCheckVideoStatusUserPerSeconde = 60;
+constexpr int kCheckVideoStatusIpPerMinute = 300;
+constexpr int kCheckVideoStatusMaxIds = 20;      // at most 20 ids per poll
 // ---------------------------------------------------------------------------
 // Logging helpers
 // ---------------------------------------------------------------------------
@@ -154,4 +160,10 @@ inline constexpr const char* LogicMailCdKeyDay = "rl_login_mail_d_";
 inline constexpr const char* UploadVideoUserPerMinute = "upload:upload:uid:";
 inline constexpr const char* UploadVideoIpPerMinute = "upload:upload:ip:";
 inline constexpr const char* UploadTicketKey = "upload:ticket:";  // 上传会话（幂等键）
+
+inline constexpr const char* CheckVideoStatusUserPerSeconde = "check:status:uid:";
+inline constexpr const char* CheckVideoStatusIpPerMinute = "upload:status:ip:";
+// chat login lease issued by StatusServer
+inline constexpr const char* ChatTokenKey = "chat:token:";
+
 #endif  // GETSERVER_CONST_H

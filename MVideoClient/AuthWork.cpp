@@ -4,6 +4,7 @@
 
 #include "AuthWork.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -62,7 +63,9 @@ void AuthWork::parseReply(ReqId id, Modules mod, int httpStatus, int networkErro
                 if (id == ID_UPLOAD_VIDEO) {
                     emit sigHomeUpLoadParsed(error, message, ResponseVideoData{});
                 }else if (id == ID_UPLOAD_SERVER_CHECK) {
-                    emit sigServerCheckComplete(false);
+                    emit sigServerCheckComplete(0, false);
+                }else if (id == ID_VIDEO_STATUS) {
+                    emit sigVideoStatusDone();
                 }
                 break;
         }
@@ -232,6 +235,14 @@ void AuthWork::handleHomeMon(const ReqId id, const QJsonObject& object) {
         response.requestId = object.value(QStringLiteral("request_id")).toString();
         emit sigHomeUpLoadParsed(Success, "上传成功，等待传输完成...", response);
     }else if (id == ID_UPLOAD_SERVER_CHECK) {
-        emit sigServerCheckComplete(true);
+        emit sigServerCheckComplete(object.value(QStringLiteral("video_id")).toVariant().toLongLong(), true);
+    }else if (id == ID_VIDEO_STATUS) {
+        const auto videos = object.value(QStringLiteral("videos")).toArray();
+        for (const auto& value : videos) {
+            const auto item = value.toObject();
+            emit sigVideoStatus(item.value(QStringLiteral("video_id")).toVariant().toLongLong(),
+                                 item.value(QStringLiteral("status")).toInt());
+        }
+        emit sigVideoStatusDone();
     }
 }

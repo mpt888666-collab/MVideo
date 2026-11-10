@@ -236,19 +236,21 @@ ApplicationWindow {
                 TcpAuth.loginChatServer()
             }
         }
-        function onUploadFailed(error, message) {
-            if (error === 0) {
-                console.log("qml : 文件传输minio失败, " , message)
-            }
+        function onUploadFailed(videoId, error, message) {
+            console.log("qml : 文件传输minio失败, id =", videoId, "code =", error, message)
         }
 
-        function onUploadSuccess(error, message) {
-            console.log("qml : 文件传输minio完成, 等待服务器校验完毕", message)
+        function onUploadSuccess(videoId, error, message) {
+            console.log("qml : 文件传输minio完成, 等待服务器校验完毕, id =", videoId)
         }
 
-        function onServerCheckComplete(state){
-            if(state) console.log("qml : 服务器认证完成, 解码中")
-            else console.log("qml : 服务器认证失败")
+        function onQueueChanged(pending, active) {
+            console.log("qml : 上传队列, 待传 =", pending, "进行中 =", active)
+        }
+
+        function onServerCheckComplete(videoId, ok){
+            if(ok) console.log("qml : 服务器认证完成, 解码中", videoId)
+            else console.log("qml : 服务器认证失败", videoId)
         }
 
     }

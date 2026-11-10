@@ -49,6 +49,7 @@ enum ReqId {
     ID_CHAT_LOGIN_RSP = 1006,  // 用户登录回包
     ID_UPLOAD_VIDEO = 1007,    //上传视频
     ID_UPLOAD_SERVER_CHECK = 1008, //服务器检查上传是否成功
+    ID_VIDEO_STATUS = 1009,         //视频状态查询
 };
 
 enum Modules {
@@ -95,5 +96,9 @@ inline bool isRetryable(int httpStatus, ErrorCodes ec) {
         return true;                                    // 连不上/超时，压根没拿到状态码
     return false;
 }
+
+// video status polling
+constexpr int kVideoStatusPollMs = 3000;      // poll every 3s while a work is transcoding
+constexpr int kVideoStatusPollMaxSec = 1800; // give up after 30 minutes
 
 #endif //MVIDEOCLIENT_CONST_H

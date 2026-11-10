@@ -145,3 +145,40 @@ long long RedisMgr::EvalInt(
         return -1;
     }
 }
+int RedisMgr::MatchHash(
+        const std::string& key, const std::vector<std::pair<std::string, std::string>>& fields
+) {
+    if (!_redis)
+        return -1;
+    if (key.empty() || fields.empty())
+        return 0;
+
+    // ARGV = field1, value1, field2, value2, ...
+    static constexpr char kScript[] = R"lua(
+if redis.call('EXISTS', KEYS[1]) == 0 then
+    return 0
+end
+local n = #ARGV
+if n % 2 ~= 0 then
+    return 0
+end
+for i = 1, n, 2 do
+    local v = redis.call('HGET', KEYS[1], ARGV[i])
+    if not v or v ~= ARGV[i + 1] then
+        return 0
+    end
+end
+return 1
+)lua";
+
+    std::vector<std::string> args;
+    args.reserve(fields.size() * 2);
+    for (const auto& [field, value] : fields) {
+        args.push_back(field);
+        args.push_back(value);
+    }
+    const long long result = EvalInt(kScript, {key}, args);
+    if (result == -1)
+        return -1;
+    return result == 1 ? 1 : 0;
+}

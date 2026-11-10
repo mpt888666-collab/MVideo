@@ -38,5 +38,5 @@ public:
 
     static void Logic(const LogicRequest& normalized, std::shared_ptr<HttpConnection> connection, LogicDone done);
 };
-}  // namespace service
+}
 #endif  // GETSERVER_LOGICSERVICE_H

@@ -131,6 +131,16 @@ public:
     );
 
     // -1: database error, 0: updated, 1: user not found
+    struct VideoStatus {
+        unsigned long long video_id{0};
+        int status{0};
+    };
+
+    // Only rows owned by author_id and not soft-deleted. nullopt = database error.
+    std::optional<std::vector<VideoStatus>> GetVideoStatuses(
+            unsigned long long author_id, const std::vector<unsigned long long>& video_ids
+    );
+
     int ResetPwd(const std::string& email, const std::string& password_hash);
 
     // -1: database error, 0: success, 1: user not found, 2: wrong password

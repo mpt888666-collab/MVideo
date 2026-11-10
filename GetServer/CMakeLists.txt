@@ -82,7 +82,9 @@ if(EXISTS "${PROTO_FILE}")
 
     set(GENERATED_SRCS ${PB_CC} ${GRPC_CC}
             service/UpLoadVideoServer.cpp
-            service/UpLoadVideoServer.h)
+            service/UpLoadVideoServer.h
+            service/CheckStatusServer.cpp
+            service/CheckStatusServer.h)
 endif()
 
 add_executable(GetServer

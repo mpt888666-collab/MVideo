@@ -60,6 +60,8 @@ qt_add_executable(MVideoClient
         TcpAuth.h
         UploadWork.cpp
         UploadWork.h
+        WorksModel.cpp
+        WorksModel.h
 )
 
 target_include_directories(MVideoClient PRIVATE

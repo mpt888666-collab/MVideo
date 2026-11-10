@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 class RedisMgr : public Singleton<RedisMgr> {
     friend class Singleton<RedisMgr>;
@@ -44,6 +45,10 @@ public:
 
     // 删除 key，成功返回 true，失败或 key 不存在返回 false
     bool Del(const std::string& key);
+
+    // Generic hash match: returns 1 when the key exists (TTL not expired) and
+    // every field/value pair matches, 0 when any check fails, -1 on Redis error.
+    int MatchHash(const std::string& key, const std::vector<std::pair<std::string, std::string>>& fields);
 
 private:
     RedisMgr();

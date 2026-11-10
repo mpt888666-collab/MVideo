@@ -5,14 +5,16 @@
 #ifndef MVIDEOCLIENT_UPLOAD_H
 #define MVIDEOCLIENT_UPLOAD_H
 #include <QObject>
-#include "Singleton.h"
-#include <memory>
-#include <mutex>
 #include <QFile>
 #include <QNetworkAccessManager>
 #include <QQueue>
+#include <QSet>
+#include <memory>
 
+#include "Singleton.h"
 #include "AuthTypes.h"
+
+class QNetworkReply;
 class UploadWork;
 class UploadThread {
 public:
@@ -35,10 +37,12 @@ class UploadMgr final : public QObject, public Singleton<UploadMgr>, public std:
     Q_OBJECT
     friend class Singleton<UploadMgr>;
 signals:
-    void sigBeginUploadVideo(ResponseVideoData data);
-    void sigUploadFailed(int error, QString message);
-    void sigUploadSuccess(int error, QString message);
+    void sigUploadFailed(unsigned long long videoId, int error, QString message);
+    void sigUploadSuccess(unsigned long long videoId, int error, QString message);
     void sigUploadDone(ResponseVideoData data);
+    void sigAddSendQueue(ResponseVideoData data);
+    void sigAddSendQueueComplete(ResponseVideoData data, bool success, const QString& message);
+    void sigQueueChanged(int pending, int active);
 public:
     void submit(ResponseVideoData data);
 private:
@@ -49,20 +53,29 @@ private:
 
 class UploadWork : public QObject{
     Q_OBJECT
+    constexpr static int kMaxUploadCount = 4;
+    constexpr static int kStallTimeoutMs = 60000;
 public slots:
-    void slotBeginUploadVideo(ResponseVideoData task);
-
+    void slotAddSendQueue(ResponseVideoData task);
+    void slotPump();
+    void slotShutdown();
 signals:
-    void sigUploadFailed(int error, QString message);
-    void sigUploadSuccess(int error, QString message);
+    void sigUploadFailed(unsigned long long videoId, int error, QString message);
+    void sigUploadSuccess(unsigned long long videoId, int error, QString message);
     void sigUploadDone(ResponseVideoData data);
+    void sigQueueChanged(int pending, int active);
+    void sigAddSendQueueComplete(ResponseVideoData data, bool success, const QString& message);
 public:
     UploadWork();
 private:
+    bool beginUploadVideo(ResponseVideoData task);
+    void notifyQueueChanged();
+
     QNetworkAccessManager *_manager{nullptr};
-    QFile *_file{nullptr};
-    QNetworkReply* _reply{nullptr};
     bool _cancelled{false};
+    QQueue<ResponseVideoData> _sendQueue;
+    QSet<QNetworkReply*> _activeReplies;
+    int _activeCount{0};
 };
 
 

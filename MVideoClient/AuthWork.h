@@ -26,7 +26,9 @@ signals:
     void sigResetParsed(int error, const QString& message);
     void sigLoginParsed(int error, const QString& message, const LoginResult& result);
     void sigHomeUpLoadParsed(int error, const QString& message, ResponseVideoData);
-    void sigServerCheckComplete(bool);
+    void sigServerCheckComplete(qint64 videoId, bool ok);
+    void sigVideoStatus(qint64 videoId, int status);
+    void sigVideoStatusDone();
 
 private:
     static QString defaultMessage(int error);
