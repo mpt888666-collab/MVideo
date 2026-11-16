@@ -506,7 +506,7 @@ HlsOutput FfmpegRunner::TranscodeToHls(const std::string& local,
     std::chrono::seconds timeout = kHlsMaxTimeout;
     if (durationMs > 0) {
         const long long guess = static_cast<long long>(durationMs / 1000) * 5;
-        timeout = std::chrono::seconds(std::max(kHlsMinTimeout.count(), guess));
+        timeout = std::chrono::seconds(std::max<long long>(static_cast<long long>(kHlsMinTimeout.count()), guess));
     }
 
     const RunResult run = Run(ffmpeg, args, timeout);

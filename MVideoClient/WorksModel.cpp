@@ -2,7 +2,8 @@
 // Created by mpt on 2026/11/10.
 //
 
-#include "WorksModel.h"`r`n`r`n#include <QDebug>
+#include "WorksModel.h"
+#include <QDebug>
 
 WorksModel::WorksModel(QObject* parent) : QAbstractListModel(parent) {}
 

@@ -8,6 +8,8 @@
 #include <QThread>
 #include <QtEndian>
 #include <QJsonObject>
+#include <QJsonDocument>
+#include <QJsonParseError>
 TcpWorkThread::TcpWorkThread() : _tcpWorkerThread(new QThread()), _work(new TcpWork()){
     _tcpWorkerThread->setObjectName("TcpWorkThread");
     _work->moveToThread(_tcpWorkerThread);
