@@ -172,24 +172,39 @@ void HttpConnection::WriteResponse() {
 }
 
 void HttpConnection::SendOverloadResponse() {
-    _response = {};
-    _response.result(boost::beast::http::status::service_unavailable);
-    _response.version(11);
-    _response.keep_alive(false);
-    _response.set(boost::beast::http::field::server, "GateServer");
-    _response.set(boost::beast::http::field::content_type, "text/plain");
-    boost::beast::ostream(_response.body()) << "server overloaded\r\n";
-    WriteResponse();
+    auto self = shared_from_this();
+    boost::asio::dispatch(_socket.get_executor(), [self]() {
+        if (!self->IsOpen()) {
+            return;
+        }
+        self->_response = {};
+        self->_response.result(boost::beast::http::status::service_unavailable);
+        self->_response.version(11);
+        self->_response.keep_alive(false);
+        self->_response.set(boost::beast::http::field::server, "GateServer");
+        self->_response.set(boost::beast::http::field::content_type, "text/plain");
+        boost::beast::ostream(self->_response.body()) << "server overloaded\r\n";
+        self->WriteResponse();
+    });
 }
 
 void HttpConnection::SendJsonResponse(boost::beast::http::status status, const std::string& body, int retry_after) {
-    _response.result(status);
-    _response.set(boost::beast::http::field::content_type, "text/json");
-    if (retry_after > 0) {
-        _response.set(boost::beast::http::field::retry_after, std::to_string(retry_after));
-    }
-    boost::beast::ostream(_response.body()) << body;
-    WriteResponse();
+    auto self = shared_from_this();
+    boost::asio::dispatch(
+            _socket.get_executor(),
+            [self, status, body, retry_after]() {
+                if (self->_responded || !self->IsOpen()) {
+                    return;
+                }
+                self->_response.result(status);
+                self->_response.set(boost::beast::http::field::content_type, "text/json");
+                if (retry_after > 0) {
+                    self->_response.set(boost::beast::http::field::retry_after, std::to_string(retry_after));
+                }
+                boost::beast::ostream(self->_response.body()) << body;
+                self->WriteResponse();
+            }
+    );
 }
 
 boost::asio::ip::tcp::socket& HttpConnection::GetSocket() {

@@ -96,6 +96,9 @@ public:
         std::string email;
         std::string phone;
         std::string username;
+        std::string avatar;
+        unsigned int follow_count{0};
+        unsigned int fans_count{0};
     };
 
     struct NewVideo {
@@ -134,6 +137,7 @@ public:
     struct VideoStatus {
         unsigned long long video_id{0};
         int status{0};
+        std::string cover_key;
     };
 
     // Only rows owned by author_id and not soft-deleted. nullopt = database error.
@@ -141,10 +145,27 @@ public:
             unsigned long long author_id, const std::vector<unsigned long long>& video_ids
     );
 
+    struct PlayVideoDetail {
+        unsigned long long video_id{0};
+        std::string title;
+        std::string description;
+        std::string cover_key;
+        std::string master_key;
+        unsigned long long like_count{0};
+        unsigned long long favorite_count{0};
+        unsigned long long play_count{0};
+        unsigned long long comment_count{0};
+    };
+
+    // nullopt: 数据库错误、视频不存在、未发布或缺少 HLS master。
+    std::optional<PlayVideoDetail> GetPlayVideoDetail(unsigned long long video_id);
     int ResetPwd(const std::string& email, const std::string& password_hash);
 
     // -1: database error, 0: success, 1: user not found, 2: wrong password
     int UserLogin(const std::string& email, const std::string& password, UserProfile& user);
+
+    // true: updated, false: database error or user_info row missing
+    bool UpdateUserAvatar(unsigned long long user_id, const std::string& avatar_key);
 
     MysqlConnUPtr GetConn() const {
         if (!_pool)

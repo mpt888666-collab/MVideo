@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
+import QtQuick.Effects
 
 ApplicationWindow {
     id: root
@@ -19,35 +20,34 @@ ApplicationWindow {
         return name.length > 0 ? name.charAt(0).toUpperCase() : "?"
     }
 
-    component TitleButton: Rectangle {
-        id: titleButton
+    property bool avatarMenuOpen: false
 
-        property string glyph: ""
-        property color hoverColor: "#232734"
-        property color glyphColor: "#D6DCE6"
+    readonly property var homePageItem: {
+        const item = stack.currentItem
+        return item && item.isHome === true ? item : null
+    }
+    readonly property string topAvatarUrl: homePageItem ? homePageItem.profileAvatarUrl : ""
+    readonly property real topAvatarCropScaleX: homePageItem ? homePageItem.profileAvatarCropScaleX : 0
+    readonly property real topAvatarCropScaleY: homePageItem ? homePageItem.profileAvatarCropScaleY : 0
+    readonly property real topAvatarCropX: homePageItem ? homePageItem.profileAvatarCropX : 0
+    readonly property real topAvatarCropY: homePageItem ? homePageItem.profileAvatarCropY : 0
+    readonly property string topDisplayName: {
+        if (!homePageItem)
+            return UserInfo.displayName.length > 0 ? UserInfo.displayName : "未登录"
+        if (homePageItem.profileNameOverride.length > 0)
+            return homePageItem.profileNameOverride
+        return UserInfo.displayName.length > 0 ? UserInfo.displayName : "未登录"
+    }
+    readonly property string topAvatarInitial: {
+        const name = topDisplayName
+        return name.length > 0 ? name.charAt(0).toUpperCase() : "?"
+    }
 
-        signal clicked()
-
-        width: 44
-        height: 32
-        radius: 4
-        color: buttonHover.containsMouse ? hoverColor : "transparent"
-
-        Text {
-            anchors.centerIn: parent
-            text: titleButton.glyph
-            color: titleButton.glyphColor
-            font.pixelSize: 14
-        }
-
-        MouseArea {
-            id: buttonHover
-
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: titleButton.clicked()
-        }
+    function goToMine() {
+        if (!homePageItem)
+            return
+        homePageItem.currentSection = homePageItem.sectionMine
+        avatarMenuOpen = false
     }
 
     Rectangle {
@@ -98,23 +98,36 @@ ApplicationWindow {
                     }
                 }
 
-                Rectangle {
-                    id: avatar
+                Item {
+                    width: 30
+                    height: 30
 
-                    width: 32
-                    height: 32
-                    radius: width / 2
-                    color: "#1B1F27"
-                    border.width: 1
-                    border.color: "#2E3642"
-                    clip: true
+                    CircleAvatar {
+                        anchors.fill: parent
+                        diameter: 30
+                        imageSource: root.topAvatarUrl
+                        initial: root.topAvatarInitial
+                        baseColor: "#1B1F27"
+                        borderColor: "#2E3642"
+                        initialColor: "#E6EDF5"
+                        cropScaleX: root.topAvatarCropScaleX
+                        cropScaleY: root.topAvatarCropScaleY
+                        cropX: root.topAvatarCropX
+                        cropY: root.topAvatarCropY
+                    }
 
-                    Text {
-                        anchors.centerIn: parent
-                        text: root.avatarInitial
-                        color: "#E6EDF5"
-                        font.pixelSize: 13
-                        font.bold: true
+                    MouseArea {
+                        id: avatarHover
+
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.goToMine()
+                        onEntered: {
+                            hideAvatarMenuTimer.stop()
+                            root.avatarMenuOpen = true
+                        }
+                        onExited: hideAvatarMenuTimer.restart()
                     }
                 }
             }
@@ -147,6 +160,98 @@ ApplicationWindow {
         }
     }
 
+    Timer {
+        id: hideAvatarMenuTimer
+
+        interval: 140
+        repeat: false
+        onTriggered: {
+            if (!avatarHover.containsMouse && !avatarMenuHover.containsMouse)
+                root.avatarMenuOpen = false
+        }
+    }
+
+    Rectangle {
+        id: avatarMenu
+
+        z: 1000
+        width: 280
+        height: 88
+        visible: root.avatarMenuOpen && root.homePageItem !== null
+        anchors.top: titleBar.bottom
+        anchors.topMargin: 4
+        anchors.right: parent.right
+        anchors.rightMargin: 14
+        radius: 12
+        color: "#20232B"
+        border.width: 1
+        border.color: "#303644"
+
+        Row {
+            anchors.left: parent.left
+            anchors.leftMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 12
+
+            CircleAvatar {
+                diameter: 42
+                imageSource: root.topAvatarUrl
+                initial: root.topAvatarInitial
+                cropScaleX: root.topAvatarCropScaleX
+                cropScaleY: root.topAvatarCropScaleY
+                cropX: root.topAvatarCropX
+                cropY: root.topAvatarCropY
+                initialColor: "#E6EDF5"
+            }
+
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+
+                Text {
+                    text: root.topDisplayName
+                    color: "#F5F7FA"
+                    font.pixelSize: 16
+                    font.bold: true
+                    elide: Text.ElideRight
+                    width: 190
+                }
+
+                Row {
+                    spacing: 6
+
+                    Text {
+                        text: "关注 " + UserInfo.follow
+                        color: "#C8CED8"
+                        font.pixelSize: 12
+                    }
+
+                    Text {
+                        text: "|"
+                        color: "#59606D"
+                        font.pixelSize: 12
+                    }
+
+                    Text {
+                        text: "粉丝 " + UserInfo.fan
+                        color: "#C8CED8"
+                        font.pixelSize: 12
+                    }
+                }
+            }
+        }
+
+        MouseArea {
+            id: avatarMenuHover
+
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onEntered: hideAvatarMenuTimer.stop()
+            onExited: hideAvatarMenuTimer.restart()
+            onClicked: root.goToMine()
+        }
+    }
     StackView {
         id: stack
 
@@ -252,7 +357,9 @@ ApplicationWindow {
             if(ok) console.log("qml : 服务器认证完成, 解码中", videoId)
             else console.log("qml : 服务器认证失败", videoId)
         }
-
+        function onUploadProgress(videoId, percent) {
+            console.log("qml : 上传进度", videoId, percent + "%")
+        }
     }
 
     Connections {
@@ -320,6 +427,14 @@ ApplicationWindow {
     }
 
     Component {
+        id: playerPage
+
+        VideoPlayerPage {
+            onBackRequested: stack.pop()
+        }
+    }
+
+    Component {
         id: homePage
 
         HomePage {
@@ -328,6 +443,9 @@ ApplicationWindow {
             onLogoutRequested: {
                 AuthServer.logout()
                 stack.replace(loginPage)
+            }
+            onPlayRequested: function(videoId) {
+                stack.push(playerPage, { "videoId": videoId })
             }
         }
     }

@@ -50,6 +50,9 @@ enum ReqId {
     ID_UPLOAD_VIDEO = 1007,    //上传视频
     ID_UPLOAD_SERVER_CHECK = 1008, //服务器检查上传是否成功
     ID_VIDEO_STATUS = 1009,         //视频状态查询
+    ID_AVATAR_UPLOAD = 1010,
+    ID_AVATAR_COMPLETE = 1011,
+    ID_VIDEO_DETAIL = 1012,
 };
 
 enum Modules {

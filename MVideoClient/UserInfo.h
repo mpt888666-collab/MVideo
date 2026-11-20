@@ -10,6 +10,8 @@
 
 #include "Singleton.h"
 
+struct LoginResult;
+
 class UserInfo : public QObject, public Singleton<UserInfo> {
     Q_OBJECT
     Q_PROPERTY(qint64 userId READ userId NOTIFY changed)
@@ -21,6 +23,9 @@ class UserInfo : public QObject, public Singleton<UserInfo> {
     Q_PROPERTY(QString chatHost READ chatHost NOTIFY changed)
     Q_PROPERTY(int chatPort READ chatPort NOTIFY changed)
     Q_PROPERTY(bool loggedIn READ loggedIn NOTIFY changed)
+    Q_PROPERTY(qint64 follow READ follow NOTIFY changed)
+    Q_PROPERTY(qint64 fan READ fan NOTIFY changed)
+    Q_PROPERTY(QString headPath READ headPath NOTIFY changed)
 
 public:
     UserInfo();
@@ -35,10 +40,12 @@ public:
     int chatPort() const { return _chatPort; }
     bool loggedIn() const { return _loggedIn; }
     QString token() const { return _token; }
+    qint64 follow() const { return _follow; }
+    qint64 fan() const { return _fan; }
+    QString headPath() const { return _head_path; }
 
-    void applyLogin(qint64 userId, const QString& account, const QString& userName,
-                    const QString& email, const QString& phone, const QString& token,
-                    const QString& chatHost, int chatPort);
+    void applyLogin(const LoginResult& result);
+    void setHeadPath(const QString& headPath);
     void clear();
 
 signals:
@@ -54,6 +61,9 @@ private:
     QString _chatHost;
     int _chatPort{0};
     bool _loggedIn{false};
+    qint64 _follow{0};
+    qint64 _fan{0};
+    QString _head_path;
 };
 
 

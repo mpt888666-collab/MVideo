@@ -132,6 +132,8 @@ add_executable(GetServer
     storage/MinioClient.cpp
     storage/MinioClient.h
 
+    service/AvatarService.cpp
+    service/AvatarService.h
     service/LogicService.cpp
     service/LogicService.h
     service/RegisterService.cpp
@@ -140,6 +142,8 @@ add_executable(GetServer
     service/ResetPwdService.h
     service/VarifyCodeService.cpp
     service/VarifyCodeService.h
+    service/PlayVideoService.cpp
+    service/PlayVideoService.h
 
     ${GENERATED_SRCS}
 )

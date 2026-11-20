@@ -28,6 +28,9 @@ struct LogicResponse {
     std::string email{};
     std::string phone{};
     std::string username{};
+    std::string avatar{};
+    unsigned int follow_count = 0;
+    unsigned int fans_count = 0;
 };
 
 class LogicService {

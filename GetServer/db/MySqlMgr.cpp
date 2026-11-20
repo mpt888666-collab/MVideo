@@ -797,6 +797,9 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, U
     std::string stored_email;
     std::string phone;
     std::string username;
+    std::string avatar;
+    unsigned long long follow_count = 0;
+    unsigned long long fans_count = 0;
     bool user_not_found = false;
     {
         MysqlConnGuard guard(mysql_mgr->GetConn());
@@ -808,8 +811,9 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, U
 
         static const char* kSql =
                 "SELECT u.user_id, u.account, u.email, COALESCE(u.phone, ''), u.password_hash, "
-                "COALESCE(i.username, '') FROM user u "
-                "LEFT JOIN user_info i ON i.user_id = u.user_id WHERE u.email=? LIMIT 1";
+                "COALESCE(i.username, ''), COALESCE(i.avatar, ''), "
+                "COALESCE(i.following_count, 0), COALESCE(i.follower_count, 0) "
+                "FROM user u LEFT JOIN user_info i ON i.user_id = u.user_id WHERE u.email=? LIMIT 1";
         auto stmt = Prepare(mysql, kSql);
         if (!stmt) {
             return -1;
@@ -833,14 +837,16 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, U
         char phone_buffer[33]{};
         char hash_buffer[256]{};
         char username_buffer[257]{};
+        char avatar_buffer[513]{};
         unsigned long account_length = 0;
         unsigned long email_length_value = 0;
         unsigned long phone_length = 0;
         unsigned long hash_length = 0;
         unsigned long username_length = 0;
-        MYSQL_BIND result[6]{};
+        unsigned long avatar_length = 0;
+        MYSQL_BIND result[9]{};
         using MysqlNullFlag = std::remove_pointer_t<decltype(result[0].is_null)>;
-        MysqlNullFlag null_flags[6]{};
+        MysqlNullFlag null_flags[9]{};
 
         result[0].buffer_type = MYSQL_TYPE_LONGLONG;
         result[0].buffer = &db_user_id;
@@ -877,6 +883,22 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, U
         result[5].length = &username_length;
         result[5].is_null = &null_flags[5];
 
+        result[6].buffer_type = MYSQL_TYPE_STRING;
+        result[6].buffer = avatar_buffer;
+        result[6].buffer_length = static_cast<unsigned long>(sizeof(avatar_buffer));
+        result[6].length = &avatar_length;
+        result[6].is_null = &null_flags[6];
+
+        result[7].buffer_type = MYSQL_TYPE_LONGLONG;
+        result[7].buffer = &follow_count;
+        result[7].is_null = &null_flags[7];
+        result[7].is_unsigned = true;
+
+        result[8].buffer_type = MYSQL_TYPE_LONGLONG;
+        result[8].buffer = &fans_count;
+        result[8].is_null = &null_flags[8];
+        result[8].is_unsigned = true;
+
         if (mysql_stmt_bind_result(stmt.get(), result) != 0) {
             LogStmtError("mysql_stmt_bind_result(user login)", stmt.get());
             return -1;
@@ -903,6 +925,8 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, U
                 phone.assign(phone_buffer, phone_length);
             if (!null_flags[5])
                 username.assign(username_buffer, username_length);
+            if (!null_flags[6] && avatar_length < sizeof(avatar_buffer))
+                avatar.assign(avatar_buffer, avatar_length);
         }
     }
 
@@ -924,7 +948,53 @@ int MySqlMgr::UserLogin(const std::string& email, const std::string& password, U
     user.email = std::move(stored_email);
     user.phone = std::move(phone);
     user.username = std::move(username);
+    user.avatar = std::move(avatar);
+    user.follow_count = static_cast<unsigned int>(follow_count);
+    user.fans_count = static_cast<unsigned int>(fans_count);
     return 0;
+}
+bool MySqlMgr::UpdateUserAvatar(unsigned long long user_id, const std::string& avatar_key) {
+    if (user_id == 0 || avatar_key.empty()) {
+        return false;
+    }
+
+    auto mysql_mgr = MySqlMgr::GetInstance();
+    if (!mysql_mgr->IsValid()) {
+        return false;
+    }
+
+    MysqlConnGuard guard(mysql_mgr->GetConn());
+    MYSQL* mysql = guard.Raw();
+    if (!mysql) {
+        return false;
+    }
+
+    static const char* kSql = "UPDATE user_info SET avatar=? WHERE user_id=?";
+    auto stmt = Prepare(mysql, kSql);
+    if (!stmt) {
+        return false;
+    }
+
+    std::string key = avatar_key;
+    unsigned long key_length = static_cast<unsigned long>(key.size());
+    MYSQL_BIND params[2]{};
+    BindString(params[0], key, key_length);
+    params[1].buffer_type = MYSQL_TYPE_LONGLONG;
+    params[1].buffer = &user_id;
+    params[1].is_unsigned = true;
+
+    if (mysql_stmt_bind_param(stmt.get(), params) != 0) {
+        LogStmtError("mysql_stmt_bind_param(update avatar)", stmt.get());
+        return false;
+    }
+    if (mysql_stmt_execute(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(update avatar)", stmt.get());
+        return false;
+    }
+
+    const my_ulonglong affected = mysql_stmt_affected_rows(stmt.get());
+    // 0 表示值未变化（同 key 幂等重试），-1 才是失败
+    return affected != static_cast<my_ulonglong>(-1);
 }
 std::optional<std::vector<MySqlMgr::VideoStatus>> MySqlMgr::GetVideoStatuses(
         unsigned long long author_id, const std::vector<unsigned long long>& video_ids
@@ -948,7 +1018,7 @@ std::optional<std::vector<MySqlMgr::VideoStatus>> MySqlMgr::GetVideoStatuses(
     }
 
     std::string sql =
-            "SELECT id, status FROM video "
+            "SELECT id, status, cover_key FROM video "
             "WHERE author_id = ? AND deleted_at IS NULL AND id IN (";
     for (std::size_t i = 0; i < video_ids.size(); ++i) {
         if (i > 0) {
@@ -984,9 +1054,11 @@ std::optional<std::vector<MySqlMgr::VideoStatus>> MySqlMgr::GetVideoStatuses(
 
     unsigned long long video_id = 0;
     unsigned char status = 0;
-    MYSQL_BIND result[2]{};
+    char cover_key_buffer[513]{};
+    unsigned long cover_key_length = 0;
+    MYSQL_BIND result[3]{};
     using MysqlNullFlag = std::remove_pointer_t<decltype(result[0].is_null)>;
-    MysqlNullFlag null_flags[2]{};
+    MysqlNullFlag null_flags[3]{};
 
     result[0].buffer_type = MYSQL_TYPE_LONGLONG;
     result[0].buffer = &video_id;
@@ -997,6 +1069,12 @@ std::optional<std::vector<MySqlMgr::VideoStatus>> MySqlMgr::GetVideoStatuses(
     result[1].buffer = &status;
     result[1].is_unsigned = true;
     result[1].is_null = &null_flags[1];
+
+    result[2].buffer_type = MYSQL_TYPE_STRING;
+    result[2].buffer = cover_key_buffer;
+    result[2].buffer_length = static_cast<unsigned long>(sizeof(cover_key_buffer));
+    result[2].length = &cover_key_length;
+    result[2].is_null = &null_flags[2];
 
     if (mysql_stmt_bind_result(stmt.get(), result) != 0) {
         LogStmtError("mysql_stmt_bind_result(get video statuses)", stmt.get());
@@ -1020,7 +1098,150 @@ std::optional<std::vector<MySqlMgr::VideoStatus>> MySqlMgr::GetVideoStatuses(
         if (null_flags[0]) {
             continue;
         }
-        videos.push_back(VideoStatus{video_id, static_cast<int>(status)});
+        std::string cover_key;
+        if (!null_flags[2] && cover_key_length > 0) {
+            cover_key.assign(cover_key_buffer, cover_key_length);
+        }
+        videos.push_back(VideoStatus{video_id, static_cast<int>(status), std::move(cover_key)});
     }
     return videos;
+}
+std::optional<MySqlMgr::PlayVideoDetail> MySqlMgr::GetPlayVideoDetail(unsigned long long video_id) {
+    if (video_id == 0) {
+        return std::nullopt;
+    }
+
+    auto mysql_mgr = MySqlMgr::GetInstance();
+    if (!mysql_mgr->IsValid()) {
+        return std::nullopt;
+    }
+
+    MysqlConnGuard guard(mysql_mgr->GetConn());
+    MYSQL* mysql = guard.Raw();
+    if (!mysql) {
+        return std::nullopt;
+    }
+
+    static const char* kSql =
+            "SELECT v.id, COALESCE(v.title, ''), COALESCE(v.description, ''), "
+            "       COALESCE(v.cover_key, ''), COALESCE(a.storage_key, ''), "
+            "       COALESCE(s.like_count, 0), COALESCE(s.favorite_count, 0), "
+            "       COALESCE(s.play_count, 0), COALESCE(s.comment_count, 0) "
+            "FROM video v "
+            "LEFT JOIN video_asset a ON a.video_id = v.id "
+            "  AND a.asset_type = 'hls' AND a.quality = 'master' "
+            "LEFT JOIN video_stat s ON s.video_id = v.id "
+            "WHERE v.id = ? AND v.status = 3 AND v.deleted_at IS NULL "
+            "LIMIT 1";
+    auto stmt = Prepare(mysql, kSql);
+    if (!stmt) {
+        return std::nullopt;
+    }
+
+    MYSQL_BIND param{};
+    param.buffer_type = MYSQL_TYPE_LONGLONG;
+    param.buffer = &video_id;
+    param.is_unsigned = true;
+
+    if (mysql_stmt_bind_param(stmt.get(), &param) != 0) {
+        LogStmtError("mysql_stmt_bind_param(get play video)", stmt.get());
+        return std::nullopt;
+    }
+    if (mysql_stmt_execute(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_execute(get play video)", stmt.get());
+        return std::nullopt;
+    }
+
+    unsigned long long db_video_id = 0;
+    char title[1024]{};
+    char description[8192]{};
+    char cover_key[2048]{};
+    char master_key[2048]{};
+    unsigned long long like_count = 0;
+    unsigned long long favorite_count = 0;
+    unsigned long long play_count = 0;
+    unsigned long long comment_count = 0;
+    unsigned long title_length = 0;
+    unsigned long description_length = 0;
+    unsigned long cover_key_length = 0;
+    unsigned long master_key_length = 0;
+
+    MYSQL_BIND result[9]{};
+    using MysqlNullFlag = std::remove_pointer_t<decltype(result[0].is_null)>;
+    MysqlNullFlag null_flags[9]{};
+
+    result[0].buffer_type = MYSQL_TYPE_LONGLONG;
+    result[0].buffer = &db_video_id;
+    result[0].is_unsigned = true;
+    result[0].is_null = &null_flags[0];
+
+    result[1].buffer_type = MYSQL_TYPE_STRING;
+    result[1].buffer = title;
+    result[1].buffer_length = static_cast<unsigned long>(sizeof(title));
+    result[1].length = &title_length;
+    result[1].is_null = &null_flags[1];
+
+    result[2].buffer_type = MYSQL_TYPE_STRING;
+    result[2].buffer = description;
+    result[2].buffer_length = static_cast<unsigned long>(sizeof(description));
+    result[2].length = &description_length;
+    result[2].is_null = &null_flags[2];
+
+    result[3].buffer_type = MYSQL_TYPE_STRING;
+    result[3].buffer = cover_key;
+    result[3].buffer_length = static_cast<unsigned long>(sizeof(cover_key));
+    result[3].length = &cover_key_length;
+    result[3].is_null = &null_flags[3];
+
+    result[4].buffer_type = MYSQL_TYPE_STRING;
+    result[4].buffer = master_key;
+    result[4].buffer_length = static_cast<unsigned long>(sizeof(master_key));
+    result[4].length = &master_key_length;
+    result[4].is_null = &null_flags[4];
+
+    for (int i = 5; i <= 8; ++i) {
+        result[i].buffer_type = MYSQL_TYPE_LONGLONG;
+        result[i].is_unsigned = true;
+        result[i].is_null = &null_flags[i];
+    }
+    result[5].buffer = &like_count;
+    result[6].buffer = &favorite_count;
+    result[7].buffer = &play_count;
+    result[8].buffer = &comment_count;
+
+    if (mysql_stmt_bind_result(stmt.get(), result) != 0) {
+        LogStmtError("mysql_stmt_bind_result(get play video)", stmt.get());
+        return std::nullopt;
+    }
+    if (mysql_stmt_store_result(stmt.get()) != 0) {
+        LogStmtError("mysql_stmt_store_result(get play video)", stmt.get());
+        return std::nullopt;
+    }
+
+    const int fetched = mysql_stmt_fetch(stmt.get());
+    if (fetched == MYSQL_NO_DATA) {
+        return std::nullopt;
+    }
+    if (fetched != 0 && fetched != MYSQL_DATA_TRUNCATED) {
+        LogStmtError("mysql_stmt_fetch(get play video)", stmt.get());
+        return std::nullopt;
+    }
+
+    PlayVideoDetail detail{};
+    detail.video_id = db_video_id;
+    detail.title.assign(title, std::min<unsigned long>(title_length, sizeof(title) - 1));
+    detail.description.assign(description,
+                             std::min<unsigned long>(description_length, sizeof(description) - 1));
+    detail.cover_key.assign(cover_key, std::min<unsigned long>(cover_key_length, sizeof(cover_key) - 1));
+    detail.master_key.assign(master_key,
+                             std::min<unsigned long>(master_key_length, sizeof(master_key) - 1));
+    detail.like_count = null_flags[5] ? 0 : like_count;
+    detail.favorite_count = null_flags[6] ? 0 : favorite_count;
+    detail.play_count = null_flags[7] ? 0 : play_count;
+    detail.comment_count = null_flags[8] ? 0 : comment_count;
+
+    if (detail.master_key.empty()) {
+        return std::nullopt;
+    }
+    return detail;
 }

@@ -61,9 +61,20 @@ bool UploadWork::beginUploadVideo(ResponseVideoData task) {
 
     auto stalled = std::make_shared<bool>(false);
 
-    connect(reply, &QNetworkReply::uploadProgress, this, [timer](qint64, qint64) {
-        timer->start();
-    });
+    auto lastPercent = std::make_shared<int>(-1);
+    connect(reply, &QNetworkReply::uploadProgress, this,
+            [timer, this, task, lastPercent](qint64 bytesSent, qint64 bytesTotal) {
+                timer->start();
+                if (bytesTotal <= 0) {
+                    return;
+                }
+                const int percent = static_cast<int>(bytesSent * 100 / bytesTotal);
+                if (percent == *lastPercent) {
+                    return;
+                }
+                *lastPercent = percent;
+                emit sigUploadProgress(task.videoId, percent);
+            });
     connect(timer, &QTimer::timeout, this, [reply, stalled]() {
         *stalled = true;
         reply->abort();
@@ -116,6 +127,7 @@ UploadMgr::UploadMgr() {
     connect(_work_thread.work(), &UploadWork::sigUploadDone, this, &UploadMgr::sigUploadDone);
     connect(_work_thread.work(), &UploadWork::sigAddSendQueueComplete, this, &UploadMgr::sigAddSendQueueComplete);
     connect(_work_thread.work(), &UploadWork::sigQueueChanged, this, &UploadMgr::sigQueueChanged);
+    connect(_work_thread.work(), &UploadWork::sigUploadProgress, this, &UploadMgr::sigUploadProgress);
 }
 
 void UploadMgr::submit(ResponseVideoData data) {

@@ -244,6 +244,10 @@ std::string MinioClient::PresignPut(const std::string& object_key, int expires_s
     return SignRequest("PUT", object_key, expires_seconds).url;
 }
 
+std::string MinioClient::PresignGet(const std::string& object_key, int expires_seconds) const {
+    return SignRequest("GET", object_key, expires_seconds).url;
+}
+
 std::optional<unsigned long long> MinioClient::HeadObjectSize(
         const std::string& object_key, int timeout_seconds
 ) const {

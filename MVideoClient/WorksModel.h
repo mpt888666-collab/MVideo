@@ -16,7 +16,8 @@ struct WorkItem {
     QString description;
     QStringList tags;
     qint64 videoId{0};
-    int state{0};          // 0 上传中 1 等待校验 2 解码中 3 上传成功 4 失败
+    int state{0};          // 0 上传中 1 等待校验 2 解码中 3 已发布 4 失败
+    int uploadPercent{0};  // 0~100，只在 state 0/1 有意义
     QString coverUrl;
 };
 
@@ -33,6 +34,7 @@ public:
         VideoIdRole,
         StateRole,
         CoverUrlRole,
+        UploadPercentRole,
     };
     Q_ENUM(Role)
 
@@ -48,8 +50,9 @@ public:
     void clear();
 
     bool setVideoId(const QString& requestId, qint64 videoId);
-    bool setState(qint64 videoId, int state);
+    bool setState(qint64 videoId, int state, const QString& coverUrl = QString());
     bool setStateByRequestId(const QString& requestId, int state);
+    bool setUploadProgress(qint64 videoId, int percent);
     [[nodiscard]] qint64 latestPendingVideoId() const;
     [[nodiscard]] QList<qint64> videoIdsWithState(int state) const;
 

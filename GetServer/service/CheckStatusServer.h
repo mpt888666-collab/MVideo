@@ -10,6 +10,8 @@ namespace service {
     struct Videos {
         unsigned long long videoId;
         int status;
+        std::string coverKey;
+        std::string coverUrl;
     };
     struct ResponseData {
         unsigned long long userId;

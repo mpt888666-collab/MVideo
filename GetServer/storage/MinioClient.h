@@ -12,6 +12,8 @@ public:
 
     std::string PresignPut(const std::string& object_key, int expires_seconds) const;
 
+    std::string PresignGet(const std::string& object_key, int expires_seconds) const;
+
     std::optional<unsigned long long> HeadObjectSize(
             const std::string& object_key, int timeout_seconds = 5
     ) const;

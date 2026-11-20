@@ -52,6 +52,16 @@ qt_add_executable(MVideoClient
         AuthWork.cpp
         AuthWork.h
         AuthTypes.h
+        ApiRoutes.h
+        RequestId.h
+        AccountController.cpp
+        AccountController.h
+        AvatarController.cpp
+        AvatarController.h
+        VideoUploadController.cpp
+        VideoUploadController.h
+        VideoStatusPoller.cpp
+        VideoStatusPoller.h
         UserInfo.cpp
         UserInfo.h
         TcpMgr.cpp
@@ -62,6 +72,9 @@ qt_add_executable(MVideoClient
         UploadWork.h
         WorksModel.cpp
         WorksModel.h
+        VideoPlaybackController.cpp
+        VideoPlaybackController.h
+        VideoPlaybackController.h
 )
 
 target_include_directories(MVideoClient PRIVATE
@@ -92,7 +105,18 @@ set(MVIDEO_QML_FILES
         qml/RegisterPage.qml
         qml/ForgotPasswordPage.qml
         qml/HomePage.qml
+        qml/VideoPlayerPage.qml
         qml/UploadDialog.qml
+        qml/CircleAvatar.qml
+        qml/TitleButton.qml
+        qml/MineSideBar.qml
+        qml/MineChip.qml
+        qml/WorkCard.qml
+        qml/WorksGrid.qml
+        qml/ProfileHeader.qml
+        qml/AvatarPreviewOverlay.qml
+        qml/EditProfileDialog.qml
+        qml/AvatarCropDialog.qml
 )
 
 foreach(qml_file IN LISTS MVIDEO_QML_FILES)

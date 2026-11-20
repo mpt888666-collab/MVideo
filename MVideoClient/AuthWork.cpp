@@ -7,6 +7,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
+#include <QImageReader>
+#include <QBuffer>
+#include <QUrl>
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QNetworkReply>
@@ -66,6 +70,14 @@ void AuthWork::parseReply(ReqId id, Modules mod, int httpStatus, int networkErro
                     emit sigServerCheckComplete(0, false);
                 }else if (id == ID_VIDEO_STATUS) {
                     emit sigVideoStatusDone();
+                }else if (id == ID_AVATAR_UPLOAD) {
+                    emit sigAvatarTicket(error, QString(), QString(), message);
+                }else if (id == ID_AVATAR_COMPLETE) {
+                    emit sigAvatarComplete(error, QString(), QString(), message);
+                }else if (id == ID_VIDEO_DETAIL) {
+                    PlayInfo play{};
+                    play.description = message;
+                    emit sigplayVideoInfoComplete(play);
                 }
                 break;
         }
@@ -161,7 +173,12 @@ void AuthWork::parseReply(ReqId id, Modules mod, int httpStatus, int networkErro
                 object.value(QStringLiteral("phone")).toString(),
                 object.value(QStringLiteral("token")).toString(),
                 object.value(QStringLiteral("host")).toString(),
-                toPort(object.value(QStringLiteral("port")))});
+                toPort(object.value(QStringLiteral("port"))),
+                toInteger(object.value(QStringLiteral("follow_count"))),
+                toInteger(object.value(QStringLiteral("fans_count"))),
+                    object.value(QStringLiteral("avatar")).toString(),
+                    object.value(QStringLiteral("avatar_url")).toString()
+                });
             break;
         case HOMEMOD:
             handleHomeMon(id, object);
@@ -224,6 +241,65 @@ QString AuthWork::defaultMessage(int error)
     }
 }
 
+void AuthWork::prepareAvatar(const QString& fileUrl, qreal scaleX, qreal scaleY,
+                             qreal offsetX, qreal offsetY)
+{
+    QString localPath = fileUrl;
+    if (fileUrl.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive)) {
+        localPath = QUrl(fileUrl).toLocalFile();
+    }
+
+    QImageReader reader(localPath);
+    reader.setAutoTransform(true);
+    const QSize size = reader.size();
+    if (size.isValid() && (size.width() > 2048 || size.height() > 2048)) {
+        reader.setScaledSize(size.scaled(2048, 2048, Qt::KeepAspectRatio));
+    }
+
+    const QImage source = reader.read();
+    if (source.isNull()) {
+        emit sigAvatarPrepared({}, ErrorCodes::Error_Json,
+                               QStringLiteral("无法读取图片: %1").arg(reader.errorString()));
+        return;
+    }
+
+    if (scaleX <= 0.0001 || scaleY <= 0.0001) {
+        scaleX = 1.0;
+        scaleY = 1.0;
+        offsetX = 0.0;
+        offsetY = 0.0;
+    }
+
+    qreal sx = qBound(0.0, -offsetX / scaleX, 1.0);
+    qreal sy = qBound(0.0, -offsetY / scaleY, 1.0);
+    qreal sw = qBound(0.0, 1.0 / scaleX, 1.0 - sx);
+    qreal sh = qBound(0.0, 1.0 / scaleY, 1.0 - sy);
+
+    QRect crop(
+            QPoint(qRound(sx * source.width()), qRound(sy * source.height())),
+            QSize(qRound(sw * source.width()), qRound(sh * source.height())));
+    crop = crop.intersected(source.rect());
+    if (crop.width() <= 0 || crop.height() <= 0) {
+        emit sigAvatarPrepared({}, ErrorCodes::Error_Json, QStringLiteral("裁剪区域无效"));
+        return;
+    }
+
+    QImage avatar = source.copy(crop);
+    avatar = avatar.scaled(512, 512, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    if (avatar.width() != avatar.height()) {
+        const int side = qMin(avatar.width(), avatar.height());
+        avatar = avatar.copy((avatar.width() - side) / 2, (avatar.height() - side) / 2, side, side);
+    }
+
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    if (!buffer.open(QIODevice::WriteOnly) || !avatar.save(&buffer, "JPG", 90)) {
+        emit sigAvatarPrepared({}, ErrorCodes::Error_Json, QStringLiteral("头像编码失败"));
+        return;
+    }
+
+    emit sigAvatarPrepared(bytes, ErrorCodes::Success, QString());
+}
 void AuthWork::handleHomeMon(const ReqId id, const QJsonObject& object) {
     if (id == ID_UPLOAD_VIDEO) {
         ResponseVideoData response{};
@@ -234,6 +310,12 @@ void AuthWork::handleHomeMon(const ReqId id, const QJsonObject& object) {
         response.message = object.value(QStringLiteral("message")).toString();
         response.requestId = object.value(QStringLiteral("request_id")).toString();
         emit sigHomeUpLoadParsed(Success, "上传成功，等待传输完成...", response);
+    }else if (id == ID_AVATAR_UPLOAD) {
+        emit sigAvatarTicket(Success, object.value(QStringLiteral("object_key")).toString(),
+                              object.value(QStringLiteral("upload_url")).toString(), QString());
+    }else if (id == ID_AVATAR_COMPLETE) {
+        emit sigAvatarComplete(Success, object.value(QStringLiteral("avatar")).toString(),
+                               object.value(QStringLiteral("avatar_url")).toString(), QString());
     }else if (id == ID_UPLOAD_SERVER_CHECK) {
         emit sigServerCheckComplete(object.value(QStringLiteral("video_id")).toVariant().toLongLong(), true);
     }else if (id == ID_VIDEO_STATUS) {
@@ -241,8 +323,26 @@ void AuthWork::handleHomeMon(const ReqId id, const QJsonObject& object) {
         for (const auto& value : videos) {
             const auto item = value.toObject();
             emit sigVideoStatus(item.value(QStringLiteral("video_id")).toVariant().toLongLong(),
-                                 item.value(QStringLiteral("status")).toInt());
+                                 item.value(QStringLiteral("status")).toInt(), item.value(QStringLiteral("cover_url")).toString());
         }
         emit sigVideoStatusDone();
+    }else if (id == ID_VIDEO_DETAIL) {
+        PlayInfo play {};
+        play.videoId = toInteger(object.value(QStringLiteral("video_id")));
+        play.title = object.value(QStringLiteral("title")).toString();
+        play.description = object.value(QStringLiteral("description")).toString();
+        play.coverUrl = object.value(QStringLiteral("cover_url")).toString();
+        play.masterUrl = object.value(QStringLiteral("master_url")).toString();
+        play.playCount = toInteger(object.value(QStringLiteral("play_count")));
+        play.likeCount = toInteger(object.value(QStringLiteral("like_count")));
+        play.commentCount = toInteger(object.value(QStringLiteral("comment_count")));
+        play.favoriteCount = toInteger(object.value(QStringLiteral("favorite_count")));
+
+        const qint64 expiresIn = toInteger(object.value(QStringLiteral("expires_in")));
+        if (expiresIn > 0) {
+            play.expiresAt = QDateTime::currentDateTimeUtc().addSecs(
+                    qMax<qint64>(60, expiresIn - 60));
+        }
+        emit sigplayVideoInfoComplete(play);
     }
 }

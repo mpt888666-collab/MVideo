@@ -16,6 +16,7 @@
 #include "service/RegisterService.h"
 #include "service/ResetPwdService.h"
 #include "service/VarifyCodeService.h"
+#include "storage/MinioClient.h"
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/thread_pool.hpp>
@@ -31,14 +32,31 @@
 #include <string>
 #include <utility>
 
+#include "service/AvatarService.h"
 #include "service/CheckStatusServer.h"
 #include "service/UpLoadVideoServer.h"
+#include "service/PlayVideoService.h"
 using http::PostToPool;
 
 namespace {
 struct ReplyState {
-    bool replied = false;
+    std::atomic<bool> replied{false};
 };
+
+// 抢“首答”权：并发的 send 里只有一个能真正写响应。
+bool TryClaim(
+        const std::shared_ptr<HttpConnection>& connection,
+        const std::shared_ptr<ReplyState>& state
+) {
+    if (!connection->IsOpen()) {
+        return false;
+    }
+    return !state->replied.exchange(true, std::memory_order_acq_rel);
+}
+
+constexpr int kCoverUrlTtlSec = 900;  // cover presigned GET lifetime
+constexpr int kPlayUrlTtlSec = 900;    // hls master presigned GET lifetime
+constexpr int kAvatarUrlTtlSec = 900; // avatar presigned GET lifetime
 
 std::string ClientIp(const std::shared_ptr<HttpConnection>& connection) {
     try {
@@ -58,10 +76,9 @@ void SendVideoResponse(
 ) {
     boost::asio::post(connection->GetSocket().get_executor(),
         [connection, state, data = std::move(data), status, retry_after, ec] {
-            if (state->replied || !connection->IsOpen()) {
+            if (!TryClaim(connection, state)) {
                 return;
             }
-            state->replied = true;
             json send_json;
             send_json["error"] = ec;
             send_json["msg"] = data.message;
@@ -117,10 +134,9 @@ void LogicSystem::initPostHandlers() {
         auto send = [connection, state](int error, boost::beast::http::status status, int retry_after) {
             boost::asio::post(
                     connection->GetSocket().get_executor(), [connection, state, error, status, retry_after]() {
-                        if (state->replied || !connection->IsOpen()) {
+                        if (!TryClaim(connection, state)) {
                             return;
                         }
-                        state->replied = true;
 
                         json response;
                         response["error"] = error;
@@ -259,10 +275,9 @@ void LogicSystem::initPostHandlers() {
             boost::asio::post(
                     connection->GetSocket().get_executor(),
                     [connection, state, error, status, message = std::move(message), retry_after, user_id]() {
-                        if (state->replied || !connection->IsOpen()) {
+                        if (!TryClaim(connection, state)) {
                             return;
                         }
-                        state->replied = true;
 
                         json response;
                         response["error"] = error;
@@ -370,10 +385,9 @@ void LogicSystem::initPostHandlers() {
         auto send = [connection, state](int error, boost::beast::http::status status, int retry_after) {
             boost::asio::post(
                     connection->GetSocket().get_executor(), [connection, state, error, status, retry_after]() {
-                        if (state->replied || !connection->IsOpen()) {
+                        if (!TryClaim(connection, state)) {
                             return;
                         }
-                        state->replied = true;
 
                         json response;
                         response["error"] = error;
@@ -459,29 +473,32 @@ void LogicSystem::initPostHandlers() {
 
         auto state = std::make_shared<ReplyState>();
         auto send = [connection,
-                     state](int error, boost::beast::http::status status, int retry_after, unsigned long long user_id,
-                            const std::string& host = "", const std::string& port = "", const std::string& token = "",
-                            const std::string& account = "", const std::string& email = "",
-                            const std::string& phone = "", const std::string& username = "") {
+                     state](int error, boost::beast::http::status status, int retry_after,
+                            const service::LogicResponse& responsed) {
             boost::asio::post(
                     connection->GetSocket().get_executor(),
-                    [connection, state, error, status, retry_after, user_id, host, port, token, account, email, phone,
-                     username]() {
-                        if (state->replied || !connection->IsOpen()) {
+                    [connection, state, error, status, retry_after, responsed]() {
+                        if (!TryClaim(connection, state)) {
                             return;
                         }
-                        state->replied = true;
 
                         json response;
                         response["ec"] = error;
-                        response["host"] = host;
-                        response["port"] = port;
-                        response["token"] = token;
-                        response["user_id"] = user_id;
-                        response["account"] = account;
-                        response["email"] = email;
-                        response["phone"] = phone;
-                        response["username"] = username;
+                        response["host"] = responsed.host;
+                        response["port"] = responsed.port;
+                        response["token"] = responsed.token;
+                        response["user_id"] = responsed.user_id;
+                        response["account"] = responsed.account;
+                        response["email"] = responsed.email;
+                        response["phone"] = responsed.phone;
+                        response["username"] = responsed.username;
+                        response["avatar"] = responsed.avatar;
+                        response["avatar_url"] = responsed.avatar.empty()
+                                ? std::string{}
+                                : MinioClient::Instance().PresignGet(responsed.avatar, kAvatarUrlTtlSec);
+                        response["follow_count"] = responsed.follow_count;
+                        response["fans_count"] = responsed.fans_count;
+
                         connection->_response.result(status);
                         connection->_response.set(boost::beast::http::field::content_type, "application/json");
                         if (retry_after > 0) {
@@ -500,25 +517,25 @@ void LogicSystem::initPostHandlers() {
         connection->DeferResponse();
 
         if (client_ip.empty()) {
-            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, 0, 0);
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, 0, {});
             return;
         }
 
         PostToPool(
                 admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs,
                 connection,
-                [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1, 0); },
-                [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0); }, {},
+                [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1, {}); },
+                [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, {}); }, {},
                 [body = std::move(body), client_ip, send, connection]() mutable {
                     json request_json;
                     try {
                         request_json = json::parse(body);
                     } catch (const json::exception&) {
-                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, {});
                         return;
                     }
                     if (!request_json.is_object()) {
-                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, {});
                         return;
                     }
 
@@ -532,18 +549,18 @@ void LogicSystem::initPostHandlers() {
                              !std::all_of(request.request_id.begin(), request.request_id.end(), [](unsigned char c) {
                                  return std::isalnum(c) || c == '-' || c == '_';
                              }))) {
-                            send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                            send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, {});
                             return;
                         }
                     } catch (const json::exception&) {
-                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, 0);
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, 0, {});
                         return;
                     }
 
                     service::LogicRequest normalized;
                     const auto admitted = service::LogicService::Admit(request, client_ip, normalized);
                     if (admitted.ec != ErrorCodes::Success) {
-                        send(admitted.ec, service::HttpStatusForError(admitted.ec), admitted.retry_after, 0);
+                        send(admitted.ec, service::HttpStatusForError(admitted.ec), admitted.retry_after, {});
                         return;
                     }
 
@@ -552,18 +569,16 @@ void LogicSystem::initPostHandlers() {
                             mysql::kMysqlQueueBudgetMs, connection,
                             [send]() {
                                 send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, 1,
-                                     0);
+                                     {});
                             },
                             [send]() {
-                                send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error, 0, 0);
+                                send(ErrorCodes::DBError, boost::beast::http::status::internal_server_error, 0, {});
                             },
                             {},
                             [normalized = std::move(normalized), send, connection]() mutable {
                                 service::LogicService::Logic(
                                         normalized, connection, [send](const service::LogicResponse& response) {
-                                            send(response.ec, service::HttpStatusForError(response.ec), response.retry_after,
-                                                 response.user_id, response.host, response.port, response.token,
-                                                 response.account, response.email, response.phone, response.username);
+                                            send(response.ec, service::HttpStatusForError(response.ec), response.retry_after,response);
                                         }
                                 );
                             }
@@ -572,6 +587,147 @@ void LogicSystem::initPostHandlers() {
         );
     });
 
+    RegPost("/avatar_upload", [](std::shared_ptr<HttpConnection> connection) {
+        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection, state](int ec, boost::beast::http::status status,
+                                        const service::AvatarTicketResponse& data) {
+            boost::asio::post(
+                    connection->GetSocket().get_executor(),
+                    [connection, state, ec, status, data]() {
+                        if (!TryClaim(connection, state)) {
+                            return;
+                        }
+
+                        json response;
+                        response["ec"] = ec;
+                        response["object_key"] = data.objectKey;
+                        response["upload_url"] = data.uploadUrl;
+                        response["expires_in"] = data.expiresIn;
+                        response["msg"] = data.message;
+
+                        connection->_response.result(status);
+                        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+                        boost::beast::ostream(connection->_response.body()) << response.dump();
+                        connection->WriteResponse();
+                    }
+            );
+        };
+
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        auto client_ip = ClientIp(connection);
+        connection->DeferResponse();
+        if (client_ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, {});
+            return;
+        }
+
+        PostToPool(
+                admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs,
+                connection,
+                [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, {}); },
+                [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {}); }, {},
+                [body = std::move(body), client_ip, send]() mutable {
+                    json request_json;
+                    try {
+                        request_json = json::parse(body);
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                        return;
+                    }
+                    if (!request_json.is_object()) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                        return;
+                    }
+
+                    service::AvatarTicketRequest request;
+                    try {
+                        request.uid = request_json.value("uid", 0ULL);
+                        request.token = request_json.value("token", std::string{});
+                        request.requestId = request_json.value("request_id", std::string{});
+                        request.fileSize = request_json.value("file_size", 0ULL);
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                        return;
+                    }
+
+                    const auto result = service::AvatarService::CreateTicket(request, client_ip);
+                    send(result.ec, service::HttpStatusForError(result.ec), result);
+                }
+        );
+    });
+
+    RegPost("/avatar_complete", [](std::shared_ptr<HttpConnection> connection) {
+        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+
+        auto state = std::make_shared<ReplyState>();
+        auto send = [connection, state](int ec, boost::beast::http::status status,
+                                        const service::AvatarCompleteResponse& data) {
+            boost::asio::post(
+                    connection->GetSocket().get_executor(),
+                    [connection, state, ec, status, data]() {
+                        if (!TryClaim(connection, state)) {
+                            return;
+                        }
+
+                        json response;
+                        response["ec"] = ec;
+                        response["avatar"] = data.avatarKey;
+                        response["avatar_url"] = data.avatarUrl;
+                        response["msg"] = data.message;
+
+                        connection->_response.result(status);
+                        connection->_response.set(boost::beast::http::field::content_type, "application/json");
+                        boost::beast::ostream(connection->_response.body()) << response.dump();
+                        connection->WriteResponse();
+                    }
+            );
+        };
+
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        auto client_ip = ClientIp(connection);
+        connection->DeferResponse();
+        if (client_ip.empty()) {
+            send(ErrorCodes::IPUnknown, boost::beast::http::status::bad_request, {});
+            return;
+        }
+
+        PostToPool(
+                admission::WorkerPool(), admission::queued, admission::QueueLimit(), admission::kQueueBudgetMs,
+                connection,
+                [send]() { send(ErrorCodes::TooManyRequests, boost::beast::http::status::service_unavailable, {}); },
+                [send]() { send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {}); }, {},
+                [body = std::move(body), client_ip, send]() mutable {
+                    json request_json;
+                    try {
+                        request_json = json::parse(body);
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                        return;
+                    }
+                    if (!request_json.is_object()) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                        return;
+                    }
+
+                    unsigned long long uid = 0;
+                    std::string token;
+                    std::string object_key;
+                    try {
+                        uid = request_json.value("uid", 0ULL);
+                        token = request_json.value("token", std::string{});
+                        object_key = request_json.value("object_key", std::string{});
+                    } catch (const json::exception&) {
+                        send(ErrorCodes::Error_Json, boost::beast::http::status::bad_request, {});
+                        return;
+                    }
+
+                    const auto result = service::AvatarService::Complete(uid, token, object_key, client_ip);
+                    send(result.ec, service::HttpStatusForError(result.ec), result);
+                }
+        );
+    });
     RegPost("/video_upload", [](std::shared_ptr<HttpConnection> connection) {
         auto state = std::make_shared<ReplyState>();
         auto send = [connection, state](int ec, boost::beast::http::status status, int retry_after, service::ResponseVideoData data) {
@@ -719,31 +875,23 @@ void LogicSystem::initPostHandlers() {
         auto state = std::make_shared<ReplyState>();
 
         auto send = [connection, state](int error, boost::beast::http::status status, const service::ResponseData& datas) {
-            if (state->replied || !connection->IsOpen()) {
+            if (!TryClaim(connection, state)) {
                 return;
             }
-            state->replied = true;
             json send_json;
             send_json["error"] = error;
-            if (!datas.success) {
-                connection->_response.result(status);
-                connection->_response.set(boost::beast::http::field::content_type, "application/json");
-                boost::beast::ostream(connection->_response.body()) << send_json.dump();
-                connection->WriteResponse();
-                return;
+            if (datas.success) {
+                send_json["user_id"] = datas.userId;
+                for (const auto& data : datas.videos) {
+                    json array;
+                    array["video_id"] = data.videoId;
+                    array["status"] = data.status;
+                    array["cover_key"] = data.coverKey;
+                    array["cover_url"] = data.coverUrl;
+                    send_json["videos"].push_back(array);
+                }
             }
-            send_json["user_id"] = datas.userId;
-            for (const auto& data : datas.videos) {
-                json array;
-                array["video_id"] = data.videoId;
-                array["status"] = data.status;
-                send_json["videos"].push_back(array);
-            }
-
-            connection->_response.result(status);
-            connection->_response.set(boost::beast::http::field::content_type, "application/json");
-            boost::beast::ostream(connection->_response.body()) << send_json.dump();
-            connection->WriteResponse();
+            connection->SendJsonResponse(status, send_json.dump());
         };
         auto body = boost::beast::buffers_to_string(connection->_request.body().data());
         connection->DeferResponse();
@@ -814,7 +962,11 @@ void LogicSystem::initPostHandlers() {
                         response.success = true;
                         response.videos.reserve(statuses->size());
                         for (const auto& item : *statuses) {
-                            response.videos.push_back({item.video_id, item.status});
+                            std::string cover_url;
+                            if (!item.cover_key.empty()) {
+                                cover_url = MinioClient::Instance().PresignGet(item.cover_key, kCoverUrlTtlSec);
+                            }
+                            response.videos.push_back({item.video_id, item.status, item.cover_key, std::move(cover_url)});
                         }
                         send(ErrorCodes::Success, boost::beast::http::status::ok, response);
                     });
@@ -825,5 +977,138 @@ void LogicSystem::initPostHandlers() {
             }
         });
 
+    });
+
+    RegPost("/video_detail", [](std::shared_ptr<HttpConnection> connection) {
+        auto state = std::make_shared<ReplyState>();
+
+        auto status_for_error = [](int ec) -> boost::beast::http::status {
+            switch (ec) {
+                case ErrorCodes::Success:
+                    return boost::beast::http::status::ok;
+                case ErrorCodes::TooManyRequests:
+                    return boost::beast::http::status::too_many_requests;
+                case ErrorCodes::Error_Token:
+                    return boost::beast::http::status::unauthorized;
+                case ErrorCodes::VideoNotFound:
+                    return boost::beast::http::status::not_found;
+                case ErrorCodes::DBError:
+                case ErrorCodes::MySqlError:
+                    return boost::beast::http::status::internal_server_error;
+                case ErrorCodes::StorageError:
+                case ErrorCodes::VarifyBackErr:
+                    return boost::beast::http::status::service_unavailable;
+                default:
+                    return boost::beast::http::status::bad_request;
+            }
+        };
+
+        auto send = [connection, state, status_for_error](
+                int error, const service::PlayVideoData* data) {
+            if (!TryClaim(connection, state)) {
+                return;
+            }
+
+            json send_json;
+            send_json["error"] = error;
+            if (error != ErrorCodes::Success || data == nullptr) {
+                send_json["msg"] = service::PlayVideoService::ErrorMessage(error);
+                connection->SendJsonResponse(status_for_error(error), send_json.dump());
+                return;
+            }
+
+            send_json["video_id"] = data->videoId;
+            send_json["title"] = data->title;
+            send_json["description"] = data->description;
+            send_json["cover_url"] = data->coverUrl;
+            send_json["master_url"] = data->masterUrl;
+            send_json["expires_in"] = data->expiresIn;
+            send_json["like_count"] = data->likeCount;
+            send_json["favorite_count"] = data->favoriteCount;
+            send_json["play_count"] = data->playCount;
+            send_json["comment_count"] = data->commentCount;
+            connection->SendJsonResponse(status_for_error(error), send_json.dump());
+        };
+
+        auto body = boost::beast::buffers_to_string(connection->_request.body().data());
+        connection->DeferResponse();
+
+        const auto ip = ClientIp(connection);
+        if (ip.empty()) {
+            send(ErrorCodes::IPUnknown, nullptr);
+            return;
+        }
+
+        PostToPool(admission::WorkerPool(), admission::queued, admission::QueueLimit(),
+                   admission::kQueueBudgetMs, connection,
+                [send]() { send(ErrorCodes::TooManyRequests, nullptr); },
+                [send]() { send(ErrorCodes::Error_Json, nullptr); }, {},
+                [body, ip, send, connection]() {
+                    json req_json;
+                    try {
+                        req_json = json::parse(body);
+                    } catch (const std::exception&) {
+                        send(ErrorCodes::Error_Json, nullptr);
+                        return;
+                    }
+                    if (!req_json.is_object()) {
+                        send(ErrorCodes::Error_Json, nullptr);
+                        return;
+                    }
+
+                    try {
+                        const auto user_id = req_json.at("user_id").get<unsigned long long>();
+                        const auto video_id = req_json.at("video_id").get<unsigned long long>();
+                        const auto token = req_json.at("token").get<std::string>();
+                        if (user_id == 0 || video_id == 0 || token.empty()) {
+                            send(ErrorCodes::Error_Json, nullptr);
+                            return;
+                        }
+
+                        service::PlayVideoRequest request{user_id, video_id, token};
+                        const int admitted = service::PlayVideoService::Admit(request, ip);
+                        if (admitted != ErrorCodes::Success) {
+                            send(admitted, nullptr);
+                            return;
+                        }
+
+                        PostToPool(mysql::MysqlPool(), mysql::mysqlQueued,
+                                   mysql::MysqlPoolQueueLimit(), mysql::kMysqlQueueBudgetMs, connection,
+                            [send]() { send(ErrorCodes::TooManyRequests, nullptr); },
+                            [send]() { send(ErrorCodes::DBError, nullptr); }, {},
+                            [video_id, send]() {
+                                auto detail = MySqlMgr::GetInstance()->GetPlayVideoDetail(video_id);
+                                if (!detail) {
+                                    send(ErrorCodes::VideoNotFound, nullptr);
+                                    return;
+                                }
+
+                                const std::string master_url = MinioClient::Instance().PresignGet(
+                                        detail->master_key, kPlayUrlTtlSec);
+                                if (master_url.empty()) {
+                                    send(ErrorCodes::StorageError, nullptr);
+                                    return;
+                                }
+
+                                service::PlayVideoData data{};
+                                data.videoId = detail->video_id;
+                                data.title = detail->title;
+                                data.description = detail->description;
+                                data.masterUrl = master_url;
+                                data.expiresIn = kPlayUrlTtlSec;
+                                data.likeCount = detail->like_count;
+                                data.favoriteCount = detail->favorite_count;
+                                data.playCount = detail->play_count;
+                                data.commentCount = detail->comment_count;
+                                if (!detail->cover_key.empty()) {
+                                    data.coverUrl = MinioClient::Instance().PresignGet(
+                                            detail->cover_key, kCoverUrlTtlSec);
+                                }
+                                send(ErrorCodes::Success, &data);
+                            });
+                    } catch (const std::exception&) {
+                        send(ErrorCodes::Error_Json, nullptr);
+                    }
+                });
     });
 }

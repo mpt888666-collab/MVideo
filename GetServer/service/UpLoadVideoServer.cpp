@@ -62,6 +62,7 @@ boost::beast::http::status HttpStatusForError(int error) {
     switch (error) {
         case ErrorCodes::Success: return boost::beast::http::status::ok;
         case ErrorCodes::TooManyRequests: return boost::beast::http::status::too_many_requests;
+        case ErrorCodes::Error_Token: return boost::beast::http::status::unauthorized;
         case ErrorCodes::UploadDuplicated: return boost::beast::http::status::conflict;
         case ErrorCodes::VideoNotFound: return boost::beast::http::status::not_found;
         case ErrorCodes::UploadObjectMismatch:

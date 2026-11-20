@@ -129,6 +129,9 @@ void LogicService::Logic(const LogicRequest& normalized, std::shared_ptr<HttpCon
                 response.email = user.email;
                 response.phone = user.phone;
                 response.username = user.username;
+                response.avatar = user.avatar;
+                response.follow_count = user.follow_count;
+                response.fans_count = user.fans_count;
                 done_once(response);
             }
     );

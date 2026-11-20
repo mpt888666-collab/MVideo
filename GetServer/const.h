@@ -105,9 +105,17 @@ constexpr double kUploadVideoMaxBytes = 2.0 * 1024 * 1024 * 1024;  // 单文件�
 constexpr int kUploadTicketTtlSec = 24 * 3600;  // 上传会话保留 24 小时
 
 //查询status接口限流
+constexpr int kUploadAvatarUserPerMinute = 10;
+constexpr int kUploadAvatarIpPerMinute = 30;
+constexpr unsigned long long kUploadAvatarMaxBytes = 2ULL * 1024 * 1024;
+constexpr int kUploadAvatarUrlTtlSec = 900;
+
 constexpr int kCheckVideoStatusUserPerSeconde = 60;
 constexpr int kCheckVideoStatusIpPerMinute = 300;
 constexpr int kCheckVideoStatusMaxIds = 20;      // at most 20 ids per poll
+
+constexpr int kPlayVideoUserPerMinute = 60;
+constexpr int kPlayVideoIpPerMinute   = 300;
 // ---------------------------------------------------------------------------
 // Logging helpers
 // ---------------------------------------------------------------------------
@@ -161,8 +169,14 @@ inline constexpr const char* UploadVideoUserPerMinute = "upload:upload:uid:";
 inline constexpr const char* UploadVideoIpPerMinute = "upload:upload:ip:";
 inline constexpr const char* UploadTicketKey = "upload:ticket:";  // 上传会话（幂等键）
 
+inline constexpr const char* UploadAvatarUserPerMinute = "avatar:upload:uid:";
+inline constexpr const char* UploadAvatarIpPerMinute = "avatar:upload:ip:";
 inline constexpr const char* CheckVideoStatusUserPerSeconde = "check:status:uid:";
 inline constexpr const char* CheckVideoStatusIpPerMinute = "upload:status:ip:";
+
+inline constexpr const char* PlayVideoUserPerMinute = "play:video:uid:";
+inline constexpr const char* PlayVideoIpPerMinute   = "play:video:ip:";
+
 // chat login lease issued by StatusServer
 inline constexpr const char* ChatTokenKey = "chat:token:";
 

@@ -43,6 +43,7 @@ signals:
     void sigAddSendQueue(ResponseVideoData data);
     void sigAddSendQueueComplete(ResponseVideoData data, bool success, const QString& message);
     void sigQueueChanged(int pending, int active);
+    void sigUploadProgress(unsigned long long videoId, int percent);
 public:
     void submit(ResponseVideoData data);
 private:
@@ -65,6 +66,7 @@ signals:
     void sigUploadDone(ResponseVideoData data);
     void sigQueueChanged(int pending, int active);
     void sigAddSendQueueComplete(ResponseVideoData data, bool success, const QString& message);
+    void sigUploadProgress(unsigned long long videoId, int percent);
 public:
     UploadWork();
 private:

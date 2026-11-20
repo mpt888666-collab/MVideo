@@ -34,6 +34,8 @@ QVariant WorksModel::data(const QModelIndex& index, int role) const {
             return item.state;
         case CoverUrlRole:
             return item.coverUrl;
+        case UploadPercentRole:
+            return item.uploadPercent;
         default:
             return {};
     }
@@ -48,6 +50,7 @@ QHash<int, QByteArray> WorksModel::roleNames() const {
             {VideoIdRole,     "videoId"},
             {StateRole,       "workState"},
             {CoverUrlRole,    "coverUrl"},
+            {UploadPercentRole, "uploadPercent"},
     };
 }
 
@@ -85,25 +88,45 @@ bool WorksModel::setVideoId(const QString& requestId, qint64 videoId) {
     return false;
 }
 
-bool WorksModel::setState(qint64 videoId, int state) {
+bool WorksModel::setState(qint64 videoId, int state, const QString& coverUrl) {
+    const int row = indexOfVideo(videoId);
+    if (row < 0) return false;
+    auto& item = _items[row];
+
+    QList<int> roles;
+    bool dirty = false;
+
+    if (!coverUrl.isEmpty() && item.coverUrl != coverUrl) {
+        item.coverUrl = coverUrl;
+        roles.append(CoverUrlRole);
+        dirty = true;
+    }
+
+    if (item.state != state && item.state != 4 && (state == 4 || item.state <= state)) {
+        item.state = state;
+        roles.append(StateRole);
+        dirty = true;
+    }
+
+    if (!dirty) return false;
+    const auto changed = index(row, 0);
+    emit dataChanged(changed, changed, roles);
+    return true;
+}
+
+bool WorksModel::setUploadProgress(qint64 videoId, int percent) {
     const int row = indexOfVideo(videoId);
     if (row < 0) {
         return false;
     }
+    percent = qBound(0, percent, 100);
     auto& item = _items[row];
-    if (item.state == state) {
+    if (item.uploadPercent == percent) {
         return false;
     }
-    if (item.state == 4) {
-        return false;
-    }
-    // 失败(4)可以随时写入，其余状态只前进不倒退
-    if (state != 4 && item.state > state) {
-        return false;
-    }
-    item.state = state;
+    item.uploadPercent = percent;
     const auto changed = index(row, 0);
-    emit dataChanged(changed, changed, {StateRole});
+    emit dataChanged(changed, changed, {UploadPercentRole});
     return true;
 }
 

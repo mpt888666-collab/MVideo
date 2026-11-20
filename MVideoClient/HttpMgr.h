@@ -33,9 +33,17 @@ class HttpMgr : public QObject{
 public:
     explicit HttpMgr(QObject* parent = nullptr);
     void PostRequest(const QUrl& url, const QJsonObject &json,ReqId reqId,Modules mod);
+    void DownloadAvatar(const QUrl& url, const QString& savePath, qint64 userId);
+    void UploadAvatarBytes(const QUrl& url, const QByteArray& data);
+    void CancelAvatarDownload();
 
 signals:
     void sigPostToWorker(const QUrl& url, const QJsonObject& json,ReqId reqId,Modules mod);
+    void sigDownloadAvatarToWorker(const QUrl& url, const QString& savePath, qint64 userId);
+    void sigCancelAvatarDownloadToWorker();
+    void sigAvatarDownloaded(qint64 userId, bool ok, const QString& savePath, const QString& error);
+    void sigUploadAvatarBytesToWorker(const QUrl& url, const QByteArray& data);
+    void sigAvatarBytesUploaded(bool ok, int status, const QString& error);
     void sigHttpReply(ReqId id, Modules mod, int httpStatus, int networkError,
                       const QString& body);
 private:
@@ -50,13 +58,19 @@ public:
 public slots:
     void PostRequestWork(const QUrl& url, const QJsonObject& json,
                          ReqId reqId, Modules mod);
+    void DownloadAvatarWork(const QUrl& url, const QString& savePath, qint64 userId);
+    void UploadAvatarBytesWork(const QUrl& url, const QByteArray& data);
+    void CancelAvatarDownloadWork();
 
 signals:
     void sigHttpReply(ReqId id, Modules mod, int httpStatus, int networkError,
                       const QString& body);
+    void sigAvatarDownloaded(qint64 userId, bool ok, const QString& savePath, const QString& error);
+    void sigAvatarBytesUploaded(bool ok, int status, const QString& error);
 
 private:
     QNetworkAccessManager* _manager{nullptr};
+    QNetworkReply* _avatarReply{nullptr};
 
     QNetworkAccessManager *manager(){
         if (!_manager)
